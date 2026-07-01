@@ -1,0 +1,14 @@
+# Secrets / tokens -- NE JAMAIS committer
+tokens.json
+.env
+
+# Local SQLite (lives on the Railway /data volume, never commit)
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
