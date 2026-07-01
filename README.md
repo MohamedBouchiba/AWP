@@ -50,6 +50,9 @@ architecture + a step-by-step "change the look" playbook.
 
 ## Run locally
 
+> 🚀 **Never touched code?** Follow [`docs/DEMARRAGE-LOCAL.md`](docs/DEMARRAGE-LOCAL.md) — a
+> 5-step guide where an AI assistant sets everything up and launches the app for you.
+
 ```bash
 pip install -r requirements.txt
 # run without touching Teamleader (no sync):
