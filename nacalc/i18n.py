@@ -275,6 +275,9 @@ S = {
                        "en": "Teamleader consumption (hours at the selling rate)"},
     "be_basis_hint": {"nl": "Teamleader's 'verbruikt budget' waardeert de gepresteerde uren aan het verkooptarief (±€85-90/u), niet aan wat ze jullie kosten — daardoor lijkt bijna elke fase duurder dan ze is. Facturatie speelt geen rol in deze status.",
                       "en": "Teamleader's 'budget spent' values tracked hours at the selling rate (±€85-90/h), not at what they cost you — which makes nearly every phase look more expensive than it is. Invoicing plays no part in this status."},
+    # selectie op het projectoverzicht — feedback 2026-08
+    "f_all_verantw": {"nl": "Alle verantwoordelijken", "en": "All owners"},
+    "ov_sel_note": {"nl": "{n} van {total} projecten", "en": "{n} of {total} projects"},
 }
 
 

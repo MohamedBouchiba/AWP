@@ -107,13 +107,44 @@ def login_page(lang, error):
 <div style="margin-top:14px;text-align:center;font-size:12px"><a href="/app/login?lang=nl">NL</a> · <a href="/app/login?lang=en">EN</a></div>
 </form></div></body></html>"""
 
-def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_banner=False):
+def _ov_selectbar(lang, verantws, f):
+    """Server-side selection: period + owner.
+
+    A plain GET form, because these two must also drive the KPI cards. The
+    search / categorie / contract / status controls below stay client-side —
+    they only hide table rows and leave the KPIs untouched.
+    """
+    def opt(val, key):
+        sel = " selected" if f.get("period") == val else ""
+        return f'<option value="{val}"{sel}>{esc(t(key,lang))}</option>'
+    per = ('<select name="period" onchange="this.form.submit()">'
+           + opt("", "an_period_all") + opt("1", "an_period_1") + opt("3", "an_period_3")
+           + opt("6", "an_period_6") + opt("12", "an_period_12") + '</select>')
+    cur = f.get("verantw") or ""
+    vopts = "".join(
+        f'<option value="{esc(v)}"{" selected" if v == cur else ""}>{esc(v)}</option>'
+        for v in (verantws or []))
+    ver = (f'<select name="verantw" onchange="this.form.submit()">'
+           f'<option value="">{esc(t("f_all_verantw",lang))}</option>{vopts}</select>')
+    note = ""
+    if f.get("n_sel") != f.get("n_all"):
+        note = (f'<span class="pill type-pill">'
+                f'{esc(t("ov_sel_note",lang).format(n=f.get("n_sel"), total=f.get("n_all")))}</span>'
+                f'<a class="btn" href="/app">{esc(t("an_reset",lang))}</a>')
+    return f'<form class="filters" method="get" action="/app">{per}{ver}{note}</form>'
+
+
+def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_banner=False,
+                     verantws=None, fstate=None):
     import json
+    selectbar = _ov_selectbar(lang, verantws, fstate or {})
     if not snaps:
         if syncing:
             return (f'<div class="state"><div class="sp"></div>'
                     f'<h3>{esc(t("first_sync",lang))}</h3><p>{esc(t("first_sync_sub",lang))}</p></div>')
-        return f'<div class="state"><h3>{esc(t("empty_nodata",lang))}</h3></div>'
+        # Keep the bar: an empty result is usually the filter, and the user needs
+        # a way back.
+        return selectbar + f'<div class="state"><h3>{esc(t("empty_nodata",lang))}</h3></div>'
     rank = {"over": 3, "warn": 2, "ok": 1, "none": 0}
     banner = ""
     if show_rates_banner:
@@ -174,7 +205,7 @@ def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_ba
             f'<td>{dots(phases)}</td>'
             f'<td class="num">{marge_chip}</td></tr>')
     body = "".join(rows) or (f'<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px">{esc(t("no_projects",lang))}</td></tr>')
-    return f"""{banner}<div class="kpis">{kpi_html}</div>
+    return f"""{banner}{selectbar}<div class="kpis">{kpi_html}</div>
 <div class="filters">
 <div class="search"><input id="fSearch" oninput="applyFilters()" placeholder="{esc(t('f_search',lang))}"></div>
 <select id="fCat" onchange="applyFilters()"><option value="">{esc(t('f_all_cat',lang))}</option>{cat_opts}</select>
@@ -324,16 +355,14 @@ def render_drawer(lang, s, is_admin=False, user_names=None):
 <div class="mc"><div class="l">{esc(t('dr_offerte',lang))}</div><div class="v">{eur(s["offerte_awp"])}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_gefactureerd',lang))}</div><div class="v">{eur(invoiced_total(s) or None)}</div>{gef_extra}</div>
 <div class="mc"><div class="l">{esc(t('dr_uren_gestart',lang))}</div><div class="v">{h1(gp)} / {hb(bg)}</div>{uren_sub}</div>
+<div class="mc"><div class="l">{esc(t('dr_werfbezoek',lang))}</div><div class="v">{s["werfbezoeken"] or 0}</div></div>
+<div class="mc"><div class="l">{esc(t('dr_bespreking',lang))}</div><div class="v">{s["besprekingen"] or 0}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_kost',lang))}</div><div class="v">{kost_html}{est}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_marge',lang))}</div><div class="v" style="color:{marge_col}">{marge_html}</div></div>
 </div>
 <div class="sec-t">{esc(t('dr_voortgang',lang))}</div>{"".join(fase_rows)}
 <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">{esc(basis_note)} {esc(t('ph_caption',lang))}</div>{note}
-{pp_html}
-<div class="sec-t">{esc(t('dr_visits',lang))}</div><div class="meta-grid">
-<div class="mc"><div class="l">{esc(t('dr_werfbezoek',lang))}</div><div class="v">{s["werfbezoeken"] or 0}</div></div>
-<div class="mc"><div class="l">{esc(t('dr_bespreking',lang))}</div><div class="v">{s["besprekingen"] or 0}</div></div>
-</div></div>"""
+{pp_html}</div>"""
 
 def render_meldingen(lang, items):
     if not items:

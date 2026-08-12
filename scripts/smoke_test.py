@@ -319,6 +319,42 @@ post("/app/beheer", {"form": "basis", "status_basis": "onzin"})
 assert store.get_config("status_basis") == "cost", "valeur invalide acceptee"
 print("OK   bascule de base reversible et validee")
 
+# --- feedback round 4: overzicht selection (lot 3) -------------------------
+# "Selectie van laatste maand, 3 maanden, jaar en alles" + "op verantwoordelijke".
+check("/app", 200, login=True, contains='name="period"')
+check("/app", 200, login=True, contains='name="verantw"')
+# Only fx-new has activity this month -> a period must shrink the table AND the KPIs.
+r = check("/app?period=1", 200, login=True, contains="1 van 4 projecten")
+body = r.get_data(as_text=True)
+assert "A002" in body and "A001" not in body, "le filtre periode ne filtre pas les lignes"
+# KPI 'Lopende projecten' must be 1, not 4 -> the cards follow the selection.
+assert '<div class="val">1</div>' in body, "les KPI ne suivent pas le filtre periode"
+print("OK   filtre periode : lignes ET cartes KPI suivent")
+
+r = check("/app?verantw=YY", 200, login=True, contains="A002")
+assert "A001" not in r.get_data(as_text=True), "le filtre verantwoordelijke ne filtre pas"
+check("/app?verantw=ZZ-onbekend", 200, login=True, contains="0 van 4 projecten")
+print("OK   filtre verantwoordelijke")
+
+# Combined, and the reset link must be offered whenever a selection is active.
+r = check("/app?period=1&verantw=YY", 200, login=True, contains="1 van 4 projecten")
+assert 'href="/app"' in r.get_data(as_text=True), "pas de lien de reinitialisation"
+# No selection -> no count pill (nothing is being hidden).
+r = check("/app", 200, login=True)
+assert "van 4 projecten" not in r.get_data(as_text=True), \
+    "le compteur s'affiche alors qu'aucun filtre n'est actif"
+print("OK   filtres combines + reinitialisation")
+
+# --- feedback round 4: visits moved up (lot 4) -----------------------------
+# "Werfbezoeken en besprekingen mag hoger zichtbaar zijn, nu is er wat
+# scrolwerk." They must now sit in the header grid, ABOVE the phase list.
+r = check("/app/project/fx-new", 200, needs_style=False, login=True, contains="Werfbezoeken")
+body = r.get_data(as_text=True)
+assert body.index("Werfbezoeken") < body.index("Voortgang per fase"), \
+    "les werfbezoeken sont toujours sous la liste des fases"
+assert body.count("Werfbezoeken") == 1, "bloc werfbezoeken duplique"
+print("OK   werfbezoeken remontes au-dessus des fases")
+
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 
 if failures:

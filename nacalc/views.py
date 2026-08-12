@@ -72,7 +72,14 @@ def set_lang(code):
 @auth.login_required
 def overzicht():
     lang = get_lang()
-    snaps = store.list_snapshots(architectuur_only=True)
+    all_snaps = store.list_snapshots(architectuur_only=True)
+    # Server-side selection (period + owner), so the KPI cards follow it. The
+    # search/categorie/contract/status controls stay client-side as before.
+    period, d_from, d_to, _ = _filter_args()
+    verantw = (request.args.get("verantw") or "").strip()
+    snaps = _select_snapshots(all_snaps, period, d_from, d_to, [])
+    if verantw:
+        snaps = [s for s in snaps if (s.get("verantw_arch") or "") == verantw]
     over = sum(1 for s in snaps if s["summary_status"] == "over")
     warn = sum(1 for s in snaps if s["summary_status"] == "warn")
     # Only invoiced projects contribute a margin (components.visible_marge is the
@@ -85,11 +92,17 @@ def overzicht():
         {"lab": t("kpi_warn", lang), "val": warn, "meta": t("kpi_meta_warn", lang), "cls": "up" if warn else ""},
         {"lab": t("kpi_margin", lang), "val": components.eur(tot_marge), "meta": t("kpi_meta_margin", lang), "cls": "ok" if tot_marge >= 0 else "up"},
     ]
-    cats = sorted({s["categorie"] for s in snaps if s["categorie"]})
-    cons = sorted({s["contracttype"] for s in snaps if s["contracttype"]})
+    # Dropdown options come from ALL projects, never from the current selection,
+    # so filtering can't make the option you want disappear.
+    cats = sorted({s["categorie"] for s in all_snaps if s["categorie"]})
+    cons = sorted({s["contracttype"] for s in all_snaps if s["contracttype"]})
+    verantws = sorted({s["verantw_arch"] for s in all_snaps if s["verantw_arch"]})
     ss = store.get_sync_state()
+    fstate = {"period": period, "verantw": verantw,
+              "n_sel": len(snaps), "n_all": len(all_snaps)}
     content = pages.render_overzicht(lang, snaps, kpis, cats, cons,
-                                         syncing=bool(ss.get("running")), show_rates_banner=False)
+                                         syncing=bool(ss.get("running")), show_rates_banner=False,
+                                         verantws=verantws, fstate=fstate)
     return render_page("overzicht", t("ov_title", lang), t("ov_sub", lang), content)
 
 
