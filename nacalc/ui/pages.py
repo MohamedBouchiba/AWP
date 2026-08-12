@@ -7,7 +7,8 @@ from html import escape as esc
 
 from ..i18n import t
 from .components import (eur, h1, hb, dots, bar_color, _uren_ratio_color,
-                        _status_cell, _abar, visible_marge, visible_marge_pct)
+                        _status_cell, _abar, visible_marge, visible_marge_pct,
+                        invoiced_total)
 
 _CSS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -134,8 +135,15 @@ def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_ba
     for s in snaps:
         phases = json.loads(s["phases_json"] or "[]")
         n_started = sum(1 for p in phases if p.get("started"))
-        begroot = s["uren_begroot"] or 0
-        gepr = s["uren_gepresteerd"] or 0
+        # Hours vs budget over the STARTED phases only. Counting the budget of
+        # phases nobody has touched yet is what made A346 read "91% of hours"
+        # while two of its phases were genuinely over budget -- the exact
+        # contradiction the client reported. Pre-migration rows have neither
+        # column, so they keep the old project-wide totals.
+        bg, gp = s.get("uren_begroot_gestart"), s.get("uren_gepresteerd_gestart")
+        if bg is None or gp is None:
+            bg, gp = s["uren_begroot"], s["uren_gepresteerd"]
+        begroot, gepr = bg or 0, gp or 0
         r = gepr / begroot if begroot else 0
         rowcls, stcell = _status_cell(lang, s)
         marge = visible_marge(s)   # None unless something is actually invoiced
@@ -161,7 +169,7 @@ def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_ba
             f'<td><span class="tag">{esc(s["contracttype"] or "—")}</span></td>'
             f'<td class="num">{eur(s["budget_klant"])}</td>'
             f'<td class="num">{eur(s["offerte_awp"])}</td>'
-            f'<td><div class="bar"><i style="width:{min(r*100,100):.0f}%;background:{_uren_ratio_color(r)}"></i></div>'
+            f'<td title="{esc(t("uren_gestart_tip",lang))}"><div class="bar"><i style="width:{min(r*100,100):.0f}%;background:{_uren_ratio_color(r)}"></i></div>'
             f'<div class="barlab">{h1(gepr)} / {hb(begroot)}u · {(f"{r*100:.0f}%" if begroot else "—")}</div></td>'
             f'<td>{dots(phases)}</td>'
             f'<td class="num">{marge_chip}</td></tr>')
@@ -261,8 +269,12 @@ def render_drawer(lang, s, is_admin=False, user_names=None):
             f'<div class="fase-row"><div class="fr-top"><span class="fr-name">{esc(p["naam"])}</span>'
             f'<span class="tag" style="color:{bar_color(p["color"])}">{esc(lab)}</span></div>'
             f'<div class="fbar"><i style="width:{min(r*100,100):.0f}%;background:{bar_color(p["color"])}"></i></div>'
-            f'<div class="fr-meta"><span>{eur(p["spent_eur"])} / {eur(p["budget_eur"])} {esc(t("ph_verbruikt",lang))}</span><span>{p["pct"] if p["pct"] is not None else 0}%</span></div>'
+            f'<div class="fr-meta"><span>{eur(p.get("verbruikt_eur", p["spent_eur"]))} / {eur(p["budget_eur"])} {esc(t("ph_verbruikt",lang))}</span><span>{p["pct"] if p["pct"] is not None else 0}%</span></div>'
             f'<div class="fr-meta"><span>{h1(p.get("tracked_hours"))} / {hb(p.get("budget_hours"))}u {esc(t("ph_uren_lab",lang))}</span></div></div>')
+    # Say which two numbers the per-phase % actually compares -- the client's
+    # confusion on A346 was exactly about this.
+    basis_note = t("ph_basis_spent" if (phases and phases[0].get("basis") == "spent")
+                   else "ph_basis_cost", lang)
     # Teamleader has no time budget on (some) phases -> explain the dashes.
     budget_missing = any(p.get("applicable") and not p.get("budget_hours") for p in phases)
     note = (f'<div style="font-size:11px;color:var(--muted);margin-top:6px">{esc(t("ph_budget_missing",lang))}</div>'
@@ -279,6 +291,28 @@ def render_drawer(lang, s, is_admin=False, user_names=None):
                   else f'<span title="{esc(t("marge_none_tip",lang))}">—</span>')
     marge_col = "var(--green)" if (mv or 0) >= 0 else "var(--red)"
     pp_html = _per_person(lang, s, is_admin, user_names)
+
+    # Hours over the STARTED phases (see render_overzicht), with the full budget
+    # kept visible underneath so nothing looks hidden.
+    bg, gp = s.get("uren_begroot_gestart"), s.get("uren_gepresteerd_gestart")
+    if bg is None or gp is None:
+        bg, gp = s["uren_begroot"], s["uren_gepresteerd"]
+    uren_sub = (f'<div class="mc-sub">{esc(t("dr_uren_totaal",lang).format(n=h1(s["uren_begroot"])))}</div>'
+                if s.get("uren_begroot") else "")
+    # Invoices sent outside Teamleader: admin-only, and it posts as a normal form
+    # (the drawer is injected HTML, so any <script> in here would never run).
+    gef_extra = ""
+    if is_admin:
+        cur = s.get("gefactureerd_manueel")
+        gef_extra = (
+            f'<form class="mc-inline" method="post" action="/app/project/{esc(s["project_id"])}/gefactureerd">'
+            f'<label>{esc(t("dr_gef_manueel",lang))}</label>'
+            f'<input name="bedrag" type="number" step="0.01" placeholder="0.00"'
+            f' value="{"" if cur is None else cur}">'
+            f'<button class="btn" type="submit">{esc(t("dr_gef_save",lang))}</button></form>')
+    elif s.get("gefactureerd_manueel"):
+        gef_extra = (f'<div class="mc-sub">{esc(t("dr_gef_manueel",lang))} '
+                     f'{eur(s.get("gefactureerd_manueel"))}</div>')
     return f"""<div class="dr-head"><button class="x" onclick="closeDrawer()">×</button>
 <h2>{esc(s["project_key"] or "")} · {esc(s["naam"] or "")}</h2>
 <div class="m">{esc(s["adres"] or "")} &nbsp;•&nbsp; {esc(s["verantw_arch"] or "")}</div>
@@ -288,13 +322,13 @@ def render_drawer(lang, s, is_admin=False, user_names=None):
 <div class="mc"><div class="l">{esc(t('dr_budget_klant',lang))}</div><div class="v">{eur(s["budget_klant"])}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_raming',lang))}</div><div class="v">{eur(s["raming_vo"])}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_offerte',lang))}</div><div class="v">{eur(s["offerte_awp"])}</div></div>
-<div class="mc"><div class="l">{esc(t('dr_gefactureerd',lang))}</div><div class="v">{eur(s.get("gefactureerd"))}</div></div>
-<div class="mc"><div class="l">{esc(t('dr_uren',lang))}</div><div class="v">{h1(s["uren_gepresteerd"])} / {hb(s["uren_begroot"])}</div></div>
+<div class="mc"><div class="l">{esc(t('dr_gefactureerd',lang))}</div><div class="v">{eur(invoiced_total(s) or None)}</div>{gef_extra}</div>
+<div class="mc"><div class="l">{esc(t('dr_uren_gestart',lang))}</div><div class="v">{h1(gp)} / {hb(bg)}</div>{uren_sub}</div>
 <div class="mc"><div class="l">{esc(t('dr_kost',lang))}</div><div class="v">{kost_html}{est}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_marge',lang))}</div><div class="v" style="color:{marge_col}">{marge_html}</div></div>
 </div>
 <div class="sec-t">{esc(t('dr_voortgang',lang))}</div>{"".join(fase_rows)}
-<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">{esc(t('ph_caption',lang))}</div>{note}
+<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">{esc(basis_note)} {esc(t('ph_caption',lang))}</div>{note}
 {pp_html}
 <div class="sec-t">{esc(t('dr_visits',lang))}</div><div class="meta-grid">
 <div class="mc"><div class="l">{esc(t('dr_werfbezoek',lang))}</div><div class="v">{s["werfbezoeken"] or 0}</div></div>
@@ -467,9 +501,23 @@ def _phase_card(lang, taxonomy, seen_keys, suggestions):
 {sug}</div>"""
 
 
+def _basis_card(lang, basis):
+    """Which two numbers the per-phase percentage compares. Reversible from the
+    UI on purpose: switching back needs no redeploy, just a re-sync."""
+    def radio(val, key):
+        return (f'<label class="be-ph-opt"><input type="radio" name="status_basis"'
+                f' value="{val}"{" checked" if basis == val else ""}> {esc(t(key,lang))}</label>')
+    return f"""<div class="be-card"><h2>{esc(t('be_basis_title',lang))}</h2>
+<p class="panel-s">{esc(t('be_basis_hint',lang))}</p>
+<form method="post" action="/app/beheer"><input type="hidden" name="form" value="basis">
+<div class="be-ph-list" style="margin-top:8px">{radio("cost", "be_basis_cost")}{radio("spent", "be_basis_spent")}</div>
+<button class="btn" style="margin-top:12px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button>
+</form></div>"""
+
+
 def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
                   has_tl_costs=None, tl_users=None, cost_rates=None,
-                  taxonomy=None, seen_keys=None, suggestions=None):
+                  taxonomy=None, seen_keys=None, suggestions=None, basis="cost"):
     msg = f'<div class="savemsg">{esc(t("be_saved",lang))}</div>' if saved else ""
     user_rows = "".join(
         f'<div class="be-row"><span class="nm">{esc(u["naam"] or u["email"])}</span>'
@@ -513,6 +561,7 @@ def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
 &nbsp; red &gt; <input name="red" type="number" value="{th['red']}" style="width:80px"> %
 &nbsp; dark-red ≥ <input name="darkred" type="number" value="{th['darkred']}" style="width:80px"> %</div>
 <button class="btn" style="margin-top:8px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button></form></div>
+{_basis_card(lang, basis)}
 {_phase_card(lang, taxonomy, seen_keys, suggestions)}
 <div class="be-card"><h2>{esc(t('be_users',lang))}</h2>{user_rows}
 <form method="post" action="/app/beheer" style="margin-top:14px"><input type="hidden" name="form" value="adduser">

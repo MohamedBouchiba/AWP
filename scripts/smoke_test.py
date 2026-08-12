@@ -280,6 +280,45 @@ assert not [m for m in store.list_meldingen() if m["project_id"] == "fx-oh"], \
     "une fase overhead a genere une melding"
 print("OK   une fase overhead ne genere aucune melding")
 
+# --- feedback round 4: status basis + manual invoicing (lot 2) -------------
+# Hours bar must use the STARTED-phase columns when they are present.
+store.upsert_snapshot(dict(store.get_snapshot("fx-new"),
+                           uren_begroot_gestart=5.0, uren_gepresteerd_gestart=3.0))
+check("/app", 200, login=True, contains="3.0 / 5.0u")
+print("OK   la barre d'uren utilise le budget des fases gestartes")
+
+# Manual invoicing: admin-only, survives a sync, and flows into the margin.
+r = client.post("/app/project/fx-new/gefactureerd", data={"bedrag": "250"})
+assert r.status_code in (302, 303), f"manual invoice POST -> {r.status_code}"
+assert store.get_snapshot("fx-new")["gefactureerd_manueel"] == 250.0, "montant non persiste"
+# The sync's upsert must NOT wipe it (the column is outside the write whitelist).
+store.upsert_snapshot(dict(store.get_snapshot("fx-new"), gefactureerd=500.0))
+assert store.get_snapshot("fx-new")["gefactureerd_manueel"] == 250.0, \
+    "la sync a ecrase la facturation manuelle"
+print("OK   facturation manuelle persistee et non ecrasee par la sync")
+
+# Margin is derived live: 500 (TL) + 250 (manueel) - 200 (kost) = 550.
+r = check("/app", 200, login=True, contains="€550")
+assert "€300" not in r.get_data(as_text=True), "l'ancienne marge stockee est encore affichee"
+print("OK   marge recalculee en direct sur le total facture")
+
+with client.session_transaction() as s:
+    s["uid"] = uid_plain
+r = client.post("/app/project/fx-new/gefactureerd", data={"bedrag": "999"})
+assert r.status_code == 403, f"non-admin devrait recevoir 403, recu {r.status_code}"
+assert store.get_snapshot("fx-new")["gefactureerd_manueel"] == 250.0, "non-admin a pu ecrire"
+print("OK   saisie manuelle reservee aux admins")
+
+# The basis toggle is reversible from Beheer, no redeploy needed.
+check("/app/beheer", 200, login=True, contains='name="status_basis"')
+post("/app/beheer", {"form": "basis", "status_basis": "spent"})
+assert store.get_config("status_basis") == "spent", "bascule non sauvegardee"
+post("/app/beheer", {"form": "basis", "status_basis": "cost"})
+assert store.get_config("status_basis") == "cost", "retour a la base cout impossible"
+post("/app/beheer", {"form": "basis", "status_basis": "onzin"})
+assert store.get_config("status_basis") == "cost", "valeur invalide acceptee"
+print("OK   bascule de base reversible et validee")
+
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 
 if failures:

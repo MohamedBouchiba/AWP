@@ -127,8 +127,8 @@ A346 = [
      "cost_eur": 287.50, "billed_eur": None, "tracked_hours": 3.83, "budget_hours": 73.50},
 ]
 
-print("\n--- A346 : build_phases (base actuelle = spent/budget) ---")
-ph = calc.build_phases(A346, TH)
+print("\n--- A346 : build_phases, base LEGACY (spent/budget) ---")
+ph = calc.build_phases(A346, TH, basis=calc.BASIS_SPENT)
 by = {p["naam"]: p for p in ph}
 
 eq("9 fases, ordre chronologique conserve",
@@ -187,6 +187,45 @@ eq("le ratio correct depasse 100%, l'affiche non -> c'est LA contradiction",
 # --------------------------------------------------------------------------
 # 6. margin
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# 5b. A346 sur la NOUVELLE base (kostprijs / geofferteerd) — lot 2
+#     Colonne %si_cout du relevé de production.
+# --------------------------------------------------------------------------
+print("\n--- A346 : base COUT (kostprijs / geofferteerd budget) ---")
+ph_c = calc.build_phases(A346, TH, basis=calc.BASIS_COST)
+by_c = {p["naam"]: p for p in ph_c}
+eq("base par defaut = cout", calc.DEFAULT_BASIS, calc.BASIS_COST)
+for naam, want in [("1. ADMINISTRATIE", 40.0), ("2. SCHETSONTWERP", 27.6),
+                   ("3. VOORONTWERP", 87.8), ("4. BOUWAANVRAAG", 37.6),
+                   ("5. UITVOERINGSDOSSIER", 151.9), ("6. COMPLETE WERFOPVOLGING", 62.0),
+                   ("9. BOUWCOORDINATIE", 4.6)]:
+    eq(f"pct {naam} = {want}", by_c[naam]["pct"], want)
+eq("7. NAZORG : ni cout ni heures -> pct None", by_c["7. NAZORG"]["pct"], None)
+# LA correction demandee : VOORONTWERP n'est plus 'fors over budget'.
+eq("3. VOORONTWERP : darkred -> amber", by_c["3. VOORONTWERP"]["color"], "amber")
+# ... mais le vrai depassement subsiste, on ne blanchit rien.
+eq("5. UITVOERINGSDOSSIER reste darkred", by_c["5. UITVOERINGSDOSSIER"]["color"], "darkred")
+summ_c = calc.project_summary(ph_c)
+eq("le projet reste 'over' (le depassement est reel)", summ_c["status"], "over")
+eq("1 seule fase en depassement au lieu de 2", summ_c["n_over"], 1)
+eq("1 fase en 'dreigt over'", summ_c["n_warn"], 1)
+eq("verbruikt_eur porte le numerateur reellement utilise",
+   by_c["5. UITVOERINGSDOSSIER"]["verbruikt_eur"], 14235.27)
+eq("source du cout tracee par fase", by_c["5. UITVOERINGSDOSSIER"]["kost_bron"], "teamleader")
+
+print("\n--- fallback cout : droit Teamleader coupe ---")
+NO_COST = [{"name": "3. VOORONTWERP", "budget_eur": 1000.0, "spent_eur": 900.0,
+            "cost_eur": None, "tracked_hours": 10.0, "budget_hours": 20.0}]
+fb = calc.build_phases(NO_COST, TH, basis=calc.BASIS_COST, internal_rate=65.0)[0]
+eq("cout estime = heures x tarif interne", fb["cost_eur"], 650.0)
+eq("pct sur l'estimation", fb["pct"], 65.0)
+eq("source signalee comme estimation", fb["kost_bron"], "flat")
+fb2 = calc.build_phases(NO_COST, TH, basis=calc.BASIS_COST)[0]   # pas de tarif
+eq("sans tarif : pct None, jamais un faux 0", fb2["pct"], None)
+eq("sans tarif : cout None", fb2["cost_eur"], None)
+eq("phase_cost sans heures ni cout -> (None, None)",
+   calc.phase_cost({"tracked_hours": 0}, 65.0), (None, None))
+
 print("\n--- margin ---")
 eq("marge = basis - kost", calc.margin(1000.0, 400.0), (600.0, 60))
 eq("basis 0 -> pct 0, jamais de division par zero", calc.margin(0, 400.0), (-400.0, 0))
@@ -283,7 +322,9 @@ eq("aucune suggestion sur un vocabulaire deja propre",
                           {"aliases": {}, "order": [], "overhead": []}), {})
 
 print("\n--- A346 : l'overhead ne doit RIEN changer ici (administratie a 48%) ---")
-ph_tx = calc.build_phases(A346, TH, phases.DEFAULT_TAXONOMY)
+# Base LEGACY ici : ce bloc compare a `summ`/`tot` calcules plus haut sur
+# spent/budget. La base cout est verifiee dans son propre bloc.
+ph_tx = calc.build_phases(A346, TH, phases.DEFAULT_TAXONOMY, basis=calc.BASIS_SPENT)
 summ_tx = calc.project_summary(ph_tx)
 eq("statut toujours 'over'", summ_tx["status"], "over")
 eq("toujours 2 fases en depassement", summ_tx["n_over"], 2)
@@ -295,11 +336,11 @@ eq("heures inchangees : l'overhead reste compte", tot_tx, tot)
 
 print("\n--- le cas que le client decrit : administratie seule fait basculer ---")
 ADMIN_ONLY = [
-    # 249.90 EUR de budget : la premiere heure pointee fait exploser le %.
+    # 249.90 EUR de budget : quelques heures pointees font exploser le %.
     {"name": "1. ADMINISTRATIE", "budget_eur": 249.90, "spent_eur": 700.00,
-     "tracked_hours": 8.0, "budget_hours": 3.0},
+     "cost_eur": 700.00, "tracked_hours": 8.0, "budget_hours": 3.0},
     {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 2000.0,
-     "tracked_hours": 20.0, "budget_hours": 100.0},
+     "cost_eur": 2000.0, "tracked_hours": 20.0, "budget_hours": 100.0},
 ]
 NO_TX = {"aliases": {}, "order": [], "overhead": [], "labels": {}}
 eq("AVANT (taxonomie desactivee) : le projet est 'over' a cause de l'administratie",

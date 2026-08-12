@@ -96,7 +96,8 @@ def _is_architectuur(cfs, cfids):
     return type_norm not in config.NON_ARCHITECTUUR_TYPES
 
 
-def _compute(item, mappings, thresholds, internal_rate, rates_map, taxonomy=None):
+def _compute(item, mappings, thresholds, internal_rate, rates_map, taxonomy=None,
+             basis=calc.DEFAULT_BASIS):
     pid = item["id"]
     cfids, wt = mappings["cfids"], mappings["wt"]
     info = TL.project_info(pid)
@@ -130,8 +131,9 @@ def _compute(item, mappings, thresholds, internal_rate, rates_map, taxonomy=None
             # Budgeted hours on the group; quotation section hours as fallback.
             "budget_hours": TL.hours(g.get("time_estimated")) or qh.get(_norm(g.get("title")), 0)}
            for g in groups]
-    phases = calc.build_phases(raw, thresholds, taxonomy)
+    phases = calc.build_phases(raw, thresholds, taxonomy, basis, internal_rate)
     summary = calc.project_summary(phases)
+    totals = calc.project_totals(phases)
 
     entries = TL.project_time_entries(pid)
     werfbezoeken = sum(1 for e in entries
@@ -174,7 +176,11 @@ def _compute(item, mappings, thresholds, internal_rate, rates_map, taxonomy=None
     #  3) last resort: flat internal rate (legacy behavior).
     kost = TL.amount_or_none(info.get("cost"))
     if kost is None:
-        group_costs = [p["cost_eur"] for p in phases if p.get("cost_eur") is not None]
+        # ONLY groups whose cost really came from Teamleader. build_phases now
+        # fills cost_eur with an hours x rate estimate when the permission is
+        # off, and summing those here would report an estimate as a real cost.
+        group_costs = [p["cost_eur"] for p in phases
+                       if p.get("cost_eur") is not None and p.get("kost_bron") == "teamleader"]
         kost = round(sum(group_costs), 2) if group_costs else None
     cost_estimated = 0
     kost_bron = "teamleader"
@@ -222,6 +228,12 @@ def _compute(item, mappings, thresholds, internal_rate, rates_map, taxonomy=None
         "verantw_medewerker": "", "budget_klant": budget_klant, "offerte_awp": offerte,
         "raming_vo": raming_vo, "uren_begroot": uren_begroot,
         "uren_gepresteerd": uren_gepresteerd, "effectieve_kost": kost,
+        # Hours restricted to the phases actually STARTED. Comparing all hours
+        # worked against the budget of every phase -- including ones nobody has
+        # touched -- is what made A346 read "93% of hours" while two phases were
+        # genuinely over budget. See calc.project_totals().
+        "uren_begroot_gestart": totals["begroot_uren_aangesneden"],
+        "uren_gepresteerd_gestart": totals["gepresteerd_uren"],
         "gefactureerd": gefactureerd, "project_type": project_type,
         "activity_json": json.dumps(months),
         "uren_per_persoon_json": json.dumps(per_person), "kost_bron": kost_bron,
@@ -269,6 +281,7 @@ def run_full():
         thresholds = store.get_config("thresholds", config.DEFAULT_THRESHOLDS)
         internal_rate = store.get_config("internal_cost_rate", config.DEFAULT_INTERNAL_COST_RATE)
         taxonomy = store.get_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY)
+        basis = store.get_config("status_basis", calc.DEFAULT_BASIS)
         rates_map = store.cost_rate_map()
         seen_phase_names = set()   # feeds the Beheer "optimaliseer fasenamen" button
         items = TL.tl_all("projects-v2/projects.list", {}, size=20)
@@ -280,7 +293,7 @@ def run_full():
                 continue
             try:
                 snap = _compute(item, mappings, thresholds, internal_rate, rates_map,
-                                taxonomy)
+                                taxonomy, basis)
             except Exception:
                 failed += 1      # transient API error on one project
                 continue

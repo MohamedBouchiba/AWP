@@ -11,6 +11,21 @@ from . import phases as phases_mod   # pure module too -- no IO, no cycle
 
 SEVERITY_ORDER = ["green", "amber", "red", "darkred"]
 
+# What the per-phase percentage measures.
+#   "cost"  = kostprijs bureau / geofferteerd budget  (default since 2026-08)
+#   "spent" = Teamleader's external_budget_spent / external_budget  (legacy)
+#
+# Why the switch (client feedback + the A346 probe): external_budget_spent is
+# NOT what was invoiced -- dividing it by the phase's tracked hours gives
+# €85-90/h, i.e. Teamleader values the hours at the SELLING rate. Comparing a
+# selling-rate figure to the quoted budget makes every phase look worse than it
+# is. What the office actually wants to know is "what did this phase cost us
+# against what we quoted for it", which is cost / external_budget -- the same
+# pair Teamleader itself uses for its own `margin` field (price - cost).
+BASIS_COST = "cost"
+BASIS_SPENT = "spent"
+DEFAULT_BASIS = BASIS_COST
+
 
 def color_for(pct, thresholds):
     """Map a consumption percentage to a budget-status color."""
@@ -38,7 +53,25 @@ def _money_or_none(v):
     return round(float(v), 2) if v is not None else None
 
 
-def build_phases(raw_phases, thresholds, taxonomy=None):
+def phase_cost(p, internal_rate=None):
+    """(cost €, source) of one phase — the per-phase twin of sync's cascade.
+
+    1. Teamleader's own `cost` on the group (real, per person, historically
+       correct) when the 'Costs on projects' permission exposes it;
+    2. tracked hours × the internal rate, when it doesn't;
+    3. (None, None) when we know neither — never a fake €0.
+    """
+    c = p.get("cost_eur")
+    if c is not None:
+        return round(float(c), 2), "teamleader"
+    th = float(p.get("tracked_hours") or 0)
+    if th > 0 and internal_rate:
+        return round(th * float(internal_rate), 2), "flat"
+    return None, None
+
+
+def build_phases(raw_phases, thresholds, taxonomy=None, basis=DEFAULT_BASIS,
+                 internal_rate=None):
     """raw_phases: list of {name, budget_eur, spent_eur, budget_hours,
     tracked_hours, billed_eur, cost_eur} (any order; last three optional).
 
@@ -48,6 +81,11 @@ def build_phases(raw_phases, thresholds, taxonomy=None):
     drawer shows. `taxonomy` only annotates each phase with its cross-project
     identity (canon/order/overhead) so the analysis can regroup and the rollup
     can skip overhead; it never reorders the project's own phases.
+
+    `basis` picks the numerator of the percentage (see BASIS_* above).
+    `verbruikt_eur` always carries the number the percentage was computed from,
+    so the UI can show the figure it is actually judging -- never a percentage
+    over one number next to a different number in euros.
     """
     rows = sorted(raw_phases, key=lambda p: _phase_sort_key(p.get("name")))
     out = []
@@ -57,7 +95,12 @@ def build_phases(raw_phases, thresholds, taxonomy=None):
         bh = float(p.get("budget_hours") or 0)
         th = float(p.get("tracked_hours") or 0)   # REAL hours (group time_tracked)
         applicable = be > 0
-        pct = round(se / be * 100, 1) if be > 0 else None
+        kost, kost_bron = phase_cost(p, internal_rate)
+        if basis == BASIS_COST:
+            verbruikt = kost
+        else:
+            verbruikt, kost_bron = se, "spent"
+        pct = round(verbruikt / be * 100, 1) if (be > 0 and verbruikt is not None) else None
         # Started = money consumed OR hours logged (hours can precede the first
         # simulated-spend rollup, and this is the feedback's definition).
         started = se > 0 or th > 0
@@ -75,7 +118,10 @@ def build_phases(raw_phases, thresholds, taxonomy=None):
             "budget_hours": round(bh, 1),
             "tracked_hours": round(th, 1),
             "billed_eur": _money_or_none(p.get("billed_eur")),
-            "cost_eur": _money_or_none(p.get("cost_eur")),
+            "cost_eur": _money_or_none(kost),
+            "kost_bron": kost_bron,
+            "basis": basis,
+            "verbruikt_eur": _money_or_none(verbruikt),
             "pct": pct,
             "color": color_for(pct, thresholds),
             "applicable": applicable,

@@ -107,6 +107,24 @@ def project_detail(pid):
                                user_names=names)
 
 
+@bp.post("/app/project/<pid>/gefactureerd")
+@auth.admin_required
+def set_manual_invoiced(pid):
+    """Invoices sent outside Teamleader, typed in by an admin.
+
+    A plain form POST, not fetch: the drawer is injected as raw HTML, so a
+    <script> inside it would never execute. Redirects back to the overview,
+    where the new margin is visible immediately (visible_marge derives it).
+    """
+    raw = (request.form.get("bedrag") or "").strip()
+    try:
+        bedrag = float(raw.replace(",", ".")) if raw else None
+    except ValueError:
+        bedrag = None
+    store.set_manual_invoiced(pid, bedrag)
+    return redirect(request.referrer or "/app")
+
+
 # ---------- meldingen ----------
 @bp.get("/app/meldingen")
 @auth.login_required
@@ -237,11 +255,11 @@ def _profit_by(sel, key):
     by = {}
     for s in sel:
         k = (s.get(key) or "").strip()
-        gef, kost = s.get("gefactureerd"), s.get("effectieve_kost")
+        kost = s.get("effectieve_kost")
         if not k or not components.invoiced(s) or kost is None:
             continue
         d = by.setdefault(k, {"billed": 0.0, "cost": 0.0, "n": 0})
-        d["billed"] += gef
+        d["billed"] += components.invoiced_total(s)   # incl. invoices sent outside TL
         d["cost"] += kost
         d["n"] += 1
     return sorted(((k, round(d["billed"] - d["cost"], 2), round(d["billed"], 2),
@@ -399,6 +417,11 @@ def beheer():
                              if u.get("id") == uid), uid)
                 store.add_cost_rate(uid, naam, rate, eff)
                 sync.trigger_sync()  # recompute fallback costs with the new rate
+        elif form == "basis":
+            b = request.form.get("status_basis")
+            if b in (config.DEFAULT_STATUS_BASIS, "cost", "spent"):
+                store.set_config("status_basis", b)
+                sync.trigger_sync()   # the % per phase is baked in at sync time
         elif form == "phases":
             tx = dict(_taxonomy())
             aliases = {}
@@ -452,5 +475,7 @@ def beheer():
                                   tl_users=store.get_config("tl_users", []),
                                   cost_rates=store.list_cost_rates(),
                                   taxonomy=tx, seen_keys=seen_keys,
-                                  suggestions=phases_mod.suggest_aliases(seen_names, tx))
+                                  suggestions=phases_mod.suggest_aliases(seen_names, tx),
+                                  basis=store.get_config("status_basis",
+                                                         config.DEFAULT_STATUS_BASIS))
     return render_page("beheer", t("be_title", lang), "", content)

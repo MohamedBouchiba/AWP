@@ -27,19 +27,46 @@ def hb(n):
 # (offerte - cost) while `gefactureerd` is NULL. Everything that displays a
 # margin -- drawer, overview chip, sort key, KPI, export -- must go through here
 # so they can never drift apart.
+def invoiced_total(s):
+    """Everything invoiced: Teamleader + what was invoiced outside it.
+
+    Client: "Niet alle facturen van dit project werden via Teamleader gestuurd.
+    Zijn er mogelijkheden om dit ergens manueel toe te voegen?" -- so an admin
+    can type the missing amount in the drawer and every derived figure follows.
+    """
+    return round((s.get("gefactureerd") or 0) + (s.get("gefactureerd_manueel") or 0), 2)
+
+
 def invoiced(s):
     """True when the project has a positive invoiced amount. The ONE definition
     of 'a margin is meaningful here' -- also used by the profitability graphs, so
     a negative net (credit note > invoice) can't slip into one view but not another."""
-    return (s.get("gefactureerd") or 0) > 0
+    return invoiced_total(s) > 0
 
 
 def visible_marge(s):
-    return s.get("marge") if invoiced(s) else None
+    """Margin computed LIVE from what is on the row, never from the stored value.
+
+    The stored `marge` is written by the sync, so a manually-entered invoice (or
+    a snapshot from before the definition changed) leaves it stale -- that was
+    the A371 bug, where a row kept an old "offerte - kost" margin while
+    gefactureerd was still NULL. Deriving it here makes that class of bug
+    structurally impossible.
+    """
+    if not invoiced(s):
+        return None
+    kost = s.get("effectieve_kost")
+    if kost is None:
+        return None
+    return round(invoiced_total(s) - kost, 2)
 
 
 def visible_marge_pct(s):
-    return s.get("marge_pct") if invoiced(s) else None
+    m = visible_marge(s)
+    if m is None:
+        return None
+    basis = invoiced_total(s)
+    return round(m / basis * 100) if basis else 0
 
 
 def xl_safe(v):

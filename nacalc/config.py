@@ -25,7 +25,15 @@ DEFAULT_SYNC_INTERVAL_MINUTES = int(os.environ.get("SYNC_INTERVAL_MINUTES", "60"
 # under new labels. Only bumped after a SUCCESSFUL full sync.
 # 4: phases carry their canonical identity (canon/canon_label/canon_order/
 #    overhead) so the analysis groups and the rollup skips overhead.
-CURRENT_DATA_VERSION = 4
+# 5: per-phase % is based on kostprijs vs geofferteerd budget; phases carry
+#    verbruikt_eur/basis/kost_bron, snapshots carry the started-phase hours.
+CURRENT_DATA_VERSION = 5
+
+# Which numbers the per-phase percentage compares. "cost" = kostprijs bureau vs
+# geofferteerd budget (what AWP asked for); "spent" = Teamleader's
+# external_budget_spent (hours valued at the SELLING rate) -- the legacy basis,
+# kept switchable from Beheer so the change is reversible without a redeploy.
+DEFAULT_STATUS_BASIS = "cost"
 
 # Project custom-field labels we map to ids on first sync (Teamleader 'project' context).
 CF_LABELS = {

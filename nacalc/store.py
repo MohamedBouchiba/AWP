@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS project_snapshot (
   status TEXT, is_architectuur INTEGER NOT NULL DEFAULT 1, categorie TEXT, contracttype TEXT,
   verantw_arch TEXT, verantw_medewerker TEXT, budget_klant REAL, offerte_awp REAL, raming_vo REAL,
   uren_begroot REAL, uren_gepresteerd REAL, effectieve_kost REAL, gefactureerd REAL,
+  uren_begroot_gestart REAL, uren_gepresteerd_gestart REAL, gefactureerd_manueel REAL,
   marge REAL, marge_pct REAL, project_type TEXT, activity_json TEXT,
   uren_per_persoon_json TEXT, kost_bron TEXT,
   summary_status TEXT, n_over INTEGER, n_warn INTEGER, cost_estimated INTEGER NOT NULL DEFAULT 0,
@@ -63,6 +64,9 @@ _MIGRATE_COLS = {
         ("activity_json", "TEXT"),
         ("uren_per_persoon_json", "TEXT"),
         ("kost_bron", "TEXT"),
+        ("uren_begroot_gestart", "REAL"),
+        ("uren_gepresteerd_gestart", "REAL"),
+        ("gefactureerd_manueel", "REAL"),
     ),
 }
 
@@ -105,6 +109,7 @@ def _seed_default_config():
         "custom_field_ids": {},
         "worktype_ids": {},
         "phase_taxonomy": phases.DEFAULT_TAXONOMY,
+        "status_basis": config.DEFAULT_STATUS_BASIS,
     }
     for k, v in defaults.items():
         if get_config(k, None) is None:
@@ -189,6 +194,7 @@ def upsert_snapshot(s):
     cols = ["project_id", "project_key", "titel", "naam", "adres", "status", "is_architectuur",
             "categorie", "contracttype", "verantw_arch", "verantw_medewerker", "budget_klant",
             "offerte_awp", "raming_vo", "uren_begroot", "uren_gepresteerd", "effectieve_kost",
+            "uren_begroot_gestart", "uren_gepresteerd_gestart",
             "gefactureerd", "project_type", "activity_json",
             "uren_per_persoon_json", "kost_bron",
             "marge", "marge_pct", "summary_status", "n_over", "n_warn", "cost_estimated",
@@ -199,6 +205,18 @@ def upsert_snapshot(s):
     with _conn() as c:
         c.execute(f"INSERT INTO project_snapshot({','.join(cols)}) VALUES({ph}) "
                   f"ON CONFLICT(project_id) DO UPDATE SET {upd}", vals)
+
+
+def set_manual_invoiced(project_id, amount):
+    """Invoices sent OUTSIDE Teamleader, typed in by an admin.
+
+    Deliberately absent from upsert_snapshot's column whitelist: that whitelist
+    is what the sync writes, and the sync would blank this on every run. This is
+    user data, so it gets its own writer and survives every sync.
+    """
+    with _conn() as c:
+        c.execute("UPDATE project_snapshot SET gefactureerd_manueel=? WHERE project_id=?",
+                  (None if amount is None else float(amount), project_id))
 
 
 def delete_snapshots_except(project_ids):

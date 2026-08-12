@@ -257,6 +257,24 @@ S = {
     "be_ph_suggestions": {"nl": "Voorstellen op basis van Teamleader:", "en": "Suggestions based on Teamleader:"},
     "be_ph_none_seen": {"nl": "Nog geen fasenamen gezien — draai eerst een sync.",
                         "en": "No phase names seen yet — run a sync first."},
+    # basis van de fasestatus — feedback 2026-08
+    "uren_gestart_tip": {"nl": "Uren en budget van de GESTARTE fasen. Fasen waar nog niets op geboekt is tellen niet mee — anders lijkt een dossier onder budget terwijl de lopende fasen er al over zitten.",
+                         "en": "Hours and budget of the STARTED phases. Phases nobody has booked on are excluded — otherwise a project looks under budget while its running phases are already over."},
+    "dr_uren_gestart": {"nl": "Uren (gestarte fasen)", "en": "Hours (started phases)"},
+    "dr_uren_totaal": {"nl": "op {n}u totaal begroot", "en": "of {n}h budgeted in total"},
+    "dr_gef_manueel": {"nl": "waarvan buiten Teamleader", "en": "of which outside Teamleader"},
+    "dr_gef_save": {"nl": "Bewaren", "en": "Save"},
+    "ph_basis_cost": {"nl": "Per fase = kostprijs bureau t.o.v. het geofferteerde budget van die fase.",
+                      "en": "Per phase = office cost against that phase's quoted budget."},
+    "ph_basis_spent": {"nl": "Per fase = verbruik volgens Teamleader (uren aan verkooptarief) t.o.v. het geofferteerde budget.",
+                       "en": "Per phase = Teamleader's consumption (hours at the selling rate) against the quoted budget."},
+    "be_basis_title": {"nl": "Basis van de fasestatus", "en": "Basis of the phase status"},
+    "be_basis_cost": {"nl": "Kostprijs bureau vs geofferteerd budget (aanbevolen)",
+                      "en": "Office cost vs quoted budget (recommended)"},
+    "be_basis_spent": {"nl": "Verbruik volgens Teamleader (uren aan verkooptarief)",
+                       "en": "Teamleader consumption (hours at the selling rate)"},
+    "be_basis_hint": {"nl": "Teamleader's 'verbruikt budget' waardeert de gepresteerde uren aan het verkooptarief (±€85-90/u), niet aan wat ze jullie kosten — daardoor lijkt bijna elke fase duurder dan ze is. Facturatie speelt geen rol in deze status.",
+                      "en": "Teamleader's 'budget spent' values tracked hours at the selling rate (±€85-90/h), not at what they cost you — which makes nearly every phase look more expensive than it is. Invoicing plays no part in this status."},
 }
 
 
