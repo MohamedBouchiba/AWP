@@ -47,12 +47,20 @@ Key rule: **pages never call Teamleader.** They only read the SQLite cache. The 
 engine is the only thing that talks to Teamleader; it runs on a timer and on the manual
 "Sync nu" button. So the UI is always fast, and the data is at most ~1h old.
 
-**Two-level data model (important for understanding the numbers):**
-- **Per phase** = money (€): `spent € / budget €` of each Teamleader project group. Teamleader
-  gives **no hours per phase**, only € — that's the central limitation.
-- **Per project** = real hours (time tracking) × internal cost rate, and the AWP quote (offerte).
-- This is why a project can show status "Nog niet gestart" (no € consumed in any phase) while
-  still having logged hours. Full detail of every number is in [`AUDIT.md`](AUDIT.md).
+**Data model (updated for feedback round 2):** everything comes from the Teamleader
+**project group** (= phase) itself:
+- **Per phase**: budget € (`external_budget`) and consumed € (`external_budget_spent`) drive the
+  status colour; **real hours** (`time_tracked`) vs **budgeted hours** (`time_estimated`);
+  **invoiced** (`amount_billed`) and **real cost** (`cost`, per person, historically correct).
+- **Per project**: `cost` / `amount_billed` at project level (else summed over the phases).
+- **Margin = invoiced − effective cost.** Nothing invoiced yet → shown as `—`, never a fake negative.
+- ⚠️ `cost` / `amount_billed` are **null** when the connected Teamleader user lacks the
+  *"Costs on projects"* permission. The sync **auto-detects** this (`has_project_costs` in the
+  config table) and falls back to per-person rates from **Beheer** (`cost_rates`, with history),
+  then to the flat internal rate. Fallback costs are flagged "(schatting)" in the UI.
+  Run `python scripts/probe_costs.py` (needs `TL_DEV_KEY`) to check which mode the account is in.
+
+Full detail of every number is in [`AUDIT.md`](AUDIT.md).
 
 ---
 
@@ -62,7 +70,7 @@ engine is the only thing that talks to Teamleader; it runs on a timer and on the
 |---|---|---|
 | `app.py` | Flask app object + OAuth/token/proxy routes. Ends by calling `register_nacalc(app)`. | change onboarding/proxy **routes** or OAuth logic |
 | `onboarding/pages.py` | HTML templates for the wizard + `/dev` (strings with `__PLACEHOLDER__`), and `render_info()`. Loads `onboarding.css`. | change wizard/dev **markup** |
-| `nacalc/config.py` | Constants: rates (€65 internal / €90 external), thresholds (80/100/115), custom-field label→id map, work-type names, non-architecture types. | change **defaults** |
+| `nacalc/config.py` | Constants: fallback rates (€65 internal / €90 external), thresholds (80/100/115), custom-field label→id map, work-type names, non-architecture types. | change **defaults** |
 | `nacalc/store.py` | SQLite: schema + all reads/writes (projects snapshot, users, config, alerts, sync state). | change the **DB / queries** |
 | `nacalc/teamleader.py` | Read-only Teamleader API client (`tl`, `tl_all`, typed fetchers). Uses the shared token from `app.py`. | change **which API data** is pulled |
 | `nacalc/sync.py` | The sync engine: pull → `_compute()` a per-project snapshot → store → raise alerts. Background thread + manual trigger. | change **how data is computed/synced** |
@@ -74,7 +82,7 @@ engine is the only thing that talks to Teamleader; it runs on a timer and on the
 | `nacalc/ui/pages.py` | Full page HTML: `shell` (sidebar+topbar+drawer script), `login_page`, `render_overzicht/drawer/meldingen/analyse/beheer`. Loads `dashboard.css`. | change page **markup/layout** |
 | `assets/css/dashboard.css` | ⭐ All dashboard styling. | **restyle the dashboard** |
 | `assets/css/onboarding.css` | ⭐ All wizard/dev styling. | **restyle the wizard** |
-| `scripts/` | Dev-only, never imported by the app: `api_test.py` (API demo), `teamleader_oauth.py` + `refresh_and_call.py` (local OAuth helpers), `smoke_test.py` (health check). | run local dev helpers |
+| `scripts/` | Dev-only, never imported by the app: `smoke_test.py` (health check — run after every change), `probe_costs.py` (check what Teamleader exposes), `api_test.py`, `teamleader_oauth.py` + `refresh_and_call.py`. | run local dev helpers |
 
 ---
 
@@ -157,11 +165,12 @@ Fonts: the dashboard uses the system UI font stack (set on `body`). To change it
 | Beheer (settings) | `.be-card`, `.be-row`, `.savemsg` |
 | Responsive breakpoint | `@media(max-width:1100px)` — hides sidebar, shows `.mobnav`, KPIs → 2 cols, `.grid2` → 1 col |
 
-### 5.3 The 4 analysis graphs (they matter to the client)
+### 5.3 The 5 analysis graphs (they matter to the client)
 
-All four are horizontal **bars** built from the same markup: `.arow` (a row) → `.an` (the
+All five are horizontal **bars** built from the same markup: `.arow` (a row) → `.an` (the
 label) → `.abar > i` (the coloured fill) → `.av` (the value). To restyle the graphs' shape/
-height/label, edit `.arow`, `.abar`, `.abar>i`, `.av` in `dashboard.css`.
+height/label, edit `.arow`, `.abar`, `.abar>i`, `.av` in `dashboard.css`. The filter bar above
+them reuses the `.filters` classes.
 
 The **bar colours and fill widths** are decided in Python, in
 `nacalc/ui/pages.py → render_analyse()` — each graph has a short rule like
@@ -226,9 +235,14 @@ For the exact formula behind every number, chart and drawer field, see [`AUDIT.m
 (it cross-references `sync.py`, `calc.py`, `views.py`, `ui/pages.py`). The short version:
 
 - **Phase %** = `spent € / budget €` per Teamleader project group → colour via thresholds.
-- **Project hours** = Σ time-tracking entries; **cost** = hours × €65 (internal rate).
-- **Margin** = AWP quote − cost (blank "—" when there's no quote).
-- **Status** = strictest colour across started, budgeted phases.
+- **Phase hours** = `time_tracked` vs `time_estimated` on the group (quotation hours as budget fallback).
+- **Cost** = Teamleader's `cost` (real, per person) → else per-person Beheer rates → else flat rate.
+- **Margin** = invoiced (`amount_billed`) − effective cost. Blank "—" when nothing is invoiced.
+- **Status** = strictest colour across started, budgeted phases. A phase counts as *started* when
+  money was consumed **or** hours were logged.
+- **Analyse** aggregates the cached `phases_json` over a **selection**: either a period (a project
+  is included when time was logged in it — `activity_json` months) or an explicit project list.
+  Five graphs; no API calls.
 
 Rates, thresholds and the custom-field mapping live in `nacalc/config.py` and can be overridden
 at runtime on the in-app **Beheer** page (stored in the `config` table).
@@ -282,5 +296,6 @@ not needed for UI/CSS work.
 | Rename a label / add a translation | `nacalc/i18n.py` |
 | Add a sidebar nav item | `nacalc/ui/pages.py` → `shell()` `navitem(...)`, add a `views.py` route |
 | Add a KPI card | `nacalc/views.py overzicht()` `kpis=[…]` + style via `.kpi` |
-| Change the internal cost rate | Beheer page, or `nacalc/config.py DEFAULT_INTERNAL_COST_RATE` |
+| Change the internal cost rate | Beheer page (per person, with history), or `nacalc/config.py DEFAULT_INTERNAL_COST_RATE` (flat fallback) |
+| Add a snapshot column | `store.py`: `_SCHEMA` **+** `_MIGRATE_SNAPSHOT_COLS` **+** the `cols` list in `upsert_snapshot` (all three, or it silently stays NULL) |
 | Restyle the wizard | `assets/css/onboarding.css` |

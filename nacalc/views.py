@@ -1,6 +1,7 @@
 """Routes/pages for the nacalculatie dashboard (blueprint 'nacalc')."""
 import json
 import re
+import time
 
 from flask import (Blueprint, request, redirect, session, jsonify, make_response)
 
@@ -74,7 +75,10 @@ def overzicht():
     snaps = store.list_snapshots(architectuur_only=True)
     over = sum(1 for s in snaps if s["summary_status"] == "over")
     warn = sum(1 for s in snaps if s["summary_status"] == "warn")
-    tot_marge = sum(s["marge"] for s in snaps if s["marge"] is not None)
+    # Only invoiced projects contribute a margin (components.visible_marge is the
+    # single gate) -- a stale pre-sync row must not inflate this KPI.
+    tot_marge = sum(m for s in snaps
+                    if (m := components.visible_marge(s)) is not None)
     kpis = [
         {"lab": t("kpi_running", lang), "val": len(snaps), "meta": t("kpi_meta_arch", lang), "cls": ""},
         {"lab": t("kpi_over", lang), "val": over, "meta": t("kpi_meta_action", lang) if over else t("kpi_meta_ok", lang), "cls": "up" if over else "ok"},
@@ -95,7 +99,12 @@ def project_detail(pid):
     s = store.get_snapshot(pid)
     if not s:
         return "", 404
-    return pages.render_drawer(get_lang(), s)
+    u = auth.current_user()
+    # Names come from the cached tl_users config (written by the sync thread) --
+    # pages never call the Teamleader API.
+    names = {x.get("id"): x.get("name") for x in store.get_config("tl_users", [])}
+    return pages.render_drawer(get_lang(), s, is_admin=bool(u and u["is_admin"]),
+                               user_names=names)
 
 
 # ---------- meldingen ----------
@@ -110,43 +119,223 @@ def meldingen():
 
 
 # ---------- analyse ----------
+def _months_last(n):
+    """Rolling window: the current month plus the n previous ones ('YYYY-MM').
+    'Last month' early in a new month would otherwise match almost nothing."""
+    tm = time.gmtime()
+    y, m = tm.tm_year, tm.tm_mon
+    out = set()
+    for _ in range(n + 1):
+        out.add(f"{y:04d}-{m:02d}")
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    return out
+
+
+def _months_range(a, b):
+    """Inclusive set of 'YYYY-MM' between a and b. Iterates DOWN from b so the
+    240-month safety cap drops the oldest months, never the recent ones."""
+    try:
+        ya, ma = int(a[:4]), int(a[5:7])
+        yb, mb = int(b[:4]), int(b[5:7])
+    except (ValueError, TypeError):
+        return set()
+    out = set()
+    while (yb, mb) >= (ya, ma) and len(out) < 240:
+        out.add(f"{yb:04d}-{mb:02d}")
+        mb -= 1
+        if mb == 0:
+            yb, mb = yb - 1, 12
+    return out
+
+
+def _base_of(naam):
+    """Merge the same phase across projects: '1. VOORONTWERP' -> 'VOORONTWERP'."""
+    return re.sub(r"^\s*\d+\.\s*", "", naam or "").strip() or (naam or "")
+
+
+def _filter_args():
+    """The analyse filter, read once. Shared by the page and the export."""
+    return (request.args.get("period") or "",
+            request.args.get("from") or "",
+            request.args.get("to") or "",
+            [p for p in request.args.getlist("pids") if p])
+
+
+def _select_snapshots(snaps, period, d_from, d_to, pids):
+    """Pick the projects the graphs/export run on.
+
+    The three filters are MUTUALLY EXCLUSIVE; exactly one branch fires, in this
+    documented precedence (the UI mirrors it by clearing the others):
+      1. an explicit project selection
+      2. a rolling period (1/3/6/12 months)
+      3. a custom from-to range
+      4. otherwise: everything
+    A project matches a period when time was logged in one of those months
+    (activity_json, filled at sync). Once selected, its FULL figures are used --
+    numbers are never sliced by date (per the feedback spec).
+    """
+    if pids:
+        wanted = set(pids)
+        return [s for s in snaps if s["project_id"] in wanted]
+    if period in ("1", "3", "6", "12"):
+        months = _months_last(int(period))
+    elif period == "custom" and (d_from or d_to):
+        months = _months_range(d_from or "2000-01",
+                               d_to or time.strftime("%Y-%m", time.gmtime()))
+    else:
+        return list(snaps)
+    return [s for s in snaps if months & set(json.loads(s.get("activity_json") or "[]"))]
+
+
+def _aggregate_phases(sel):
+    """Per phase base-name, over the selection.
+
+    Sums are kept over MATCHED instance sets -- budget only counts where the
+    instance also has billing data, and margin only where billed AND cost exist --
+    otherwise old-shape rows (no billed_eur/cost_eur keys) would bias the ratios.
+    """
+    agg = {}
+    for s in sel:
+        for p in json.loads(s["phases_json"] or "[]"):
+            d = agg.setdefault(_base_of(p.get("naam")), {
+                "billed": 0.0, "budget_b": 0.0, "n_billed": 0,
+                "tracked": 0.0, "budget_h": 0.0,
+                "m3": 0.0, "billed3": 0.0, "cost3": 0.0, "n_m3": 0,
+                "n": 0, "started_hours": []})
+            d["n"] += 1
+            d["tracked"] += p.get("tracked_hours") or 0
+            d["budget_h"] += p.get("budget_hours") or 0
+            billed, cost = p.get("billed_eur"), p.get("cost_eur")
+            if billed is not None:
+                d["billed"] += billed
+                d["budget_b"] += p.get("budget_eur") or 0
+                d["n_billed"] += 1
+            if billed is not None and cost is not None:
+                d["m3"] += billed - cost
+                d["billed3"] += billed
+                d["cost3"] += cost
+                d["n_m3"] += 1
+            if p.get("started"):
+                d["started_hours"].append(p.get("tracked_hours") or 0)
+    return agg
+
+
+def _profit_by(sel, key):
+    """Invoiced - effective cost, grouped by a snapshot column (categorie /
+    contracttype). Projects with nothing invoiced are skipped via the SAME gate
+    the margin uses (components.invoiced) -- otherwise running projects show fake
+    big losses, and a negative net would be included here but blank elsewhere."""
+    by = {}
+    for s in sel:
+        k = (s.get(key) or "").strip()
+        gef, kost = s.get("gefactureerd"), s.get("effectieve_kost")
+        if not k or not components.invoiced(s) or kost is None:
+            continue
+        d = by.setdefault(k, {"billed": 0.0, "cost": 0.0, "n": 0})
+        d["billed"] += gef
+        d["cost"] += kost
+        d["n"] += 1
+    return sorted(((k, round(d["billed"] - d["cost"], 2), round(d["billed"], 2),
+                    round(d["cost"], 2), d["n"]) for k, d in by.items()),
+                  key=lambda x: x[1])
+
+
 @bp.get("/app/analyse")
 @auth.login_required
 def analyse():
     lang = get_lang()
     snaps = store.list_snapshots(architectuur_only=True)
+    period, d_from, d_to, pids = _filter_args()
+    sel = _select_snapshots(snaps, period, d_from, d_to, pids)
+    agg = _aggregate_phases(sel)
 
-    # 1) Average budget USED per phase, grouped by base name (strip leading "N. ").
-    by_phase = {}
-    for s in snaps:
-        for p in json.loads(s["phases_json"] or "[]"):
-            if p["started"] and p["pct"] is not None:
-                base = re.sub(r"^\s*\d+\.\s*", "", p["naam"] or "").strip() or (p["naam"] or "")
-                by_phase.setdefault(base, []).append(p["pct"])
-    # (name, avg consumed %, N instances) — most-consumed first
-    fases = [(naam, round(sum(v) / len(v)), len(v))
-             for naam, v in sorted(by_phase.items(), key=lambda kv: -sum(kv[1]) / len(kv[1]))]
+    # 1) Invoiced € vs quote budget € per phase (delta% above/below budget).
+    g1 = sorted(((k, round(d["billed"], 2), round(d["budget_b"], 2),
+                  round(d["billed"] / d["budget_b"] * 100 - 100), d["n_billed"])
+                 for k, d in agg.items() if d["budget_b"] > 0 and d["n_billed"]),
+                key=lambda x: -x[3])
+    # 2) Tracked vs budgeted hours per phase.
+    g2 = sorted(((k, round(d["tracked"], 1), round(d["budget_h"], 1),
+                  round(d["tracked"] / d["budget_h"] * 100), d["n"])
+                 for k, d in agg.items() if d["budget_h"] > 0),
+                key=lambda x: -x[3])
+    # 3) Profitability per phase: invoiced − effective cost (€), paired instances only.
+    g3 = sorted(((k, round(d["m3"], 2), round(d["billed3"], 2),
+                  round(d["cost3"], 2), d["n_m3"])
+                 for k, d in agg.items() if d["n_m3"]),
+                key=lambda x: x[1])
+    # 4) Profitability per CATEGORY (client: "type is actually categorie").
+    g4 = _profit_by(sel, "categorie")
+    # 6) Profitability per contract type.
+    g6 = _profit_by(sel, "contracttype")
+    # 5) Average tracked hours per started phase.
+    g5 = sorted(((k, round(sum(d["started_hours"]) / len(d["started_hours"]), 1),
+                  len(d["started_hours"]))
+                 for k, d in agg.items() if d["started_hours"]),
+                key=lambda x: -x[1])
 
-    # 2) Average margin % per contract type (only projects with a quote).
-    by_con = {}
-    for s in snaps:
-        if s["contracttype"] and s["marge_pct"] is not None:
-            by_con.setdefault(s["contracttype"], []).append(s["marge_pct"])
-    contracts = [(c, round(sum(v) / len(v)), len(v)) for c, v in sorted(by_con.items())]
-
-    # 3) Share of projects over budget per category.
-    by_cat = {}
-    for s in snaps:
-        if s["categorie"]:
-            by_cat.setdefault(s["categorie"], []).append(s["summary_status"] == "over")
-    cats = [(c, round(sum(v) / len(v) * 100), len(v), sum(v)) for c, v in sorted(by_cat.items())]
-
-    # 4) Projects with a client budget (status vs budget).
-    raming = [(s["project_key"], s["summary_status"] == "over", s["budget_klant"])
-              for s in snaps if s["budget_klant"]][:12]
-
-    content = pages.render_analyse(lang, fases, contracts, cats, raming)
+    fstate = {"period": period, "from": d_from, "to": d_to, "pids": pids,
+              "projects": [(s["project_id"], f'{s["project_key"] or ""} · {s["naam"] or ""}')
+                           for s in snaps],
+              "n_sel": len(sel)}
+    content = pages.render_analyse(lang, g1, g2, g3, g4, g5, g6, fstate)
     return render_page("analyse", t("nav_analyse", lang), t("an_sub", lang), content)
+
+
+@bp.get("/app/analyse/export")
+@auth.login_required
+def analyse_export():
+    """Excel export of the data behind the graphs, for the ACTIVE filter.
+
+    Two sheets: 'Projecten' (basis of graphs 4 & 6) and 'Fases' (basis of 1,2,3,5).
+    Deliberately contains NO per-person data, so it needs no admin gate.
+    """
+    from io import BytesIO
+    from openpyxl import Workbook
+    from flask import send_file
+
+    snaps = store.list_snapshots(architectuur_only=True)
+    sel = _select_snapshots(snaps, *_filter_args())
+    xs = components.xl_safe   # neutralise spreadsheet formula injection
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Projecten"
+    ws.append(["Project", "Naam", "Categorie", "Contracttype", "Status",
+               "Gefactureerd", "Effectieve kost", "Marge (gefactureerd - kost)",
+               "Uren gepresteerd", "Uren begroot", "Kostbron"])
+    for s in sel:
+        ws.append([xs(s.get("project_key")), xs(s.get("naam")), xs(s.get("categorie")),
+                   xs(s.get("contracttype")), xs(s.get("summary_status")),
+                   s.get("gefactureerd"), s.get("effectieve_kost"),
+                   components.visible_marge(s),          # blank when nothing invoiced
+                   s.get("uren_gepresteerd"), s.get("uren_begroot"),
+                   xs(s.get("kost_bron"))])
+
+    wf = wb.create_sheet("Fases")
+    wf.append(["Project", "Fase", "Budget EUR", "Verbruikt EUR", "Verbruikt %",
+               "Gefactureerd EUR", "Kost EUR", "Uren gepresteerd", "Uren begroot",
+               "Gestart", "Inbegrepen"])
+    for s in sel:
+        for p in json.loads(s["phases_json"] or "[]"):
+            # .get() everywhere: pre-migration phases lack billed_eur/cost_eur
+            # -> blank cells, never a misleading 0.
+            wf.append([xs(s.get("project_key")), xs(p.get("naam")),
+                       p.get("budget_eur"), p.get("spent_eur"), p.get("pct"),
+                       p.get("billed_eur"), p.get("cost_eur"),
+                       p.get("tracked_hours"), p.get("budget_hours") or None,
+                       "ja" if p.get("started") else "nee",
+                       "ja" if p.get("applicable") else "nee"])
+
+    bio = BytesIO()          # fresh buffer per request (never a module global)
+    wb.save(bio)
+    bio.seek(0)
+    return send_file(
+        bio, as_attachment=True,
+        download_name=f"nacalculatie-analyse-{time.strftime('%Y%m%d')}.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 # ---------- sync ----------
@@ -166,35 +355,58 @@ def sync_state():
 
 
 # ---------- beheer ----------
+def _fnum(name, default=None):
+    """Form field -> float, or default (never raises a 500 on bad input)."""
+    try:
+        return float(request.form.get(name, ""))
+    except (TypeError, ValueError):
+        return default
+
+
 @bp.route("/app/beheer", methods=["GET", "POST"])
 @auth.admin_required
 def beheer():
     lang = get_lang()
-    saved = False
     if request.method == "POST":
         form = request.form.get("form")
         if form == "rates":
-            ic = request.form.get("internal_cost_rate")
-            ext = request.form.get("external_rate")
-            if ic:
-                store.set_config("internal_cost_rate", float(ic))
-            if ext:
-                store.set_config("external_rate", float(ext))
+            ic, ext = _fnum("internal_cost_rate"), _fnum("external_rate")
+            if ic is not None and ic > 0:
+                store.set_config("internal_cost_rate", ic)
+            if ext is not None and ext > 0:
+                store.set_config("external_rate", ext)
             sync.trigger_sync()  # recompute margins with the new rate
         elif form == "thresholds":
             store.set_config("thresholds", {
-                "amber": float(request.form.get("amber", 80)),
-                "red": float(request.form.get("red", 100)),
-                "darkred": float(request.form.get("darkred", 115))})
+                "amber": _fnum("amber", 80), "red": _fnum("red", 100),
+                "darkred": _fnum("darkred", 115)})
+        elif form == "costrate":
+            uid = (request.form.get("tl_user_id") or "").strip()
+            eff = (request.form.get("effective_from") or "").strip()
+            # _rate_for compares dates as plain strings -> only accept ISO YYYY-MM-DD.
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", eff):
+                eff = time.strftime("%Y-%m-%d")
+            rate = _fnum("eur_per_hour")
+            if uid and rate is not None and rate >= 0:
+                naam = next((u["name"] for u in store.get_config("tl_users", [])
+                             if u.get("id") == uid), uid)
+                store.add_cost_rate(uid, naam, rate, eff)
+                sync.trigger_sync()  # recompute fallback costs with the new rate
         elif form == "adduser":
             if not store.get_user_by_email(request.form.get("email", "")):
                 store.create_user(request.form["email"], request.form.get("naam", ""),
                                   auth.hash_password(request.form["password"]),
                                   is_admin=1 if request.form.get("is_admin") else 0)
-        saved = True
+        # Post/Redirect/Get: a browser refresh must not re-submit (would add a
+        # duplicate cost-rate row -- cost_rates has no unique constraint).
+        return redirect("/app/beheer?saved=1")
+    saved = request.args.get("saved") == "1"
     users = store.list_users()
     thresholds = store.get_config("thresholds", config.DEFAULT_THRESHOLDS)
     internal_rate = store.get_config("internal_cost_rate", config.DEFAULT_INTERNAL_COST_RATE)
     external_rate = store.get_config("external_rate", config.DEFAULT_EXTERNAL_RATE)
-    content = pages.render_beheer(lang, users, thresholds, internal_rate, external_rate, saved)
+    content = pages.render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
+                                  has_tl_costs=store.get_config("has_project_costs", None),
+                                  tl_users=store.get_config("tl_users", []),
+                                  cost_rates=store.list_cost_rates())
     return render_page("beheer", t("be_title", lang), "", content)

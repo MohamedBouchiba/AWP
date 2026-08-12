@@ -15,6 +15,38 @@ def eur(n):
 def h1(n):
     return ("%.1f" % (n or 0))
 
+def hb(n):
+    """Hours-or-dash: Teamleader often has no time budget on a phase -> show '—',
+    never a misleading '0.0'."""
+    return "—" if not n else h1(n)
+
+
+# ---------- the single margin gate ----------
+# Margin = invoiced - effective cost. It is meaningless (and misleading) when
+# nothing is invoiced yet: a pre-migration snapshot still carries the OLD margin
+# (offerte - cost) while `gefactureerd` is NULL. Everything that displays a
+# margin -- drawer, overview chip, sort key, KPI, export -- must go through here
+# so they can never drift apart.
+def invoiced(s):
+    """True when the project has a positive invoiced amount. The ONE definition
+    of 'a margin is meaningful here' -- also used by the profitability graphs, so
+    a negative net (credit note > invoice) can't slip into one view but not another."""
+    return (s.get("gefactureerd") or 0) > 0
+
+
+def visible_marge(s):
+    return s.get("marge") if invoiced(s) else None
+
+
+def visible_marge_pct(s):
+    return s.get("marge_pct") if invoiced(s) else None
+
+
+def xl_safe(v):
+    """Neutralise spreadsheet formula injection in exported text cells."""
+    s = "" if v is None else str(v)
+    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
 def _dot(p):
     if not p["applicable"]:
         cls = "c-none"
@@ -26,7 +58,7 @@ def _dot(p):
     if p["applicable"] and p["started"]:
         title = f'{p["naam"]}: {p["tracked_hours"]}/{p["budget_hours"]}u ({p["pct"]}%)'
     elif not p["applicable"]:
-        title = f'{p["naam"]}: n/a'
+        title = f'{p["naam"]}: niet inbegrepen'
     else:
         title = f'{p["naam"]}: 0/{p["budget_hours"]}u'
     return f'<span class="pdot {cls} {state}" title="{esc(title)}"></span>'

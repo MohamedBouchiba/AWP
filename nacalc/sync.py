@@ -96,7 +96,7 @@ def _is_architectuur(cfs, cfids):
     return type_norm not in config.NON_ARCHITECTUUR_TYPES
 
 
-def _compute(item, mappings, thresholds, internal_rate):
+def _compute(item, mappings, thresholds, internal_rate, rates_map):
     pid = item["id"]
     cfids, wt = mappings["cfids"], mappings["wt"]
     info = TL.project_info(pid)
@@ -113,6 +113,7 @@ def _compute(item, mappings, thresholds, internal_rate):
     budget_klant = parse_money(TL.cf_value(cfs, cfids.get("budget_bh")))
     raming_vo = parse_money(TL.cf_value(cfs, cfids.get("raming_awp")))
     offerte = TL.amount(info.get("price")) or TL.amount(info.get("calculated_price"))
+    project_type = str(TL.cf_value(cfs, cfids.get("type")) or "").strip()
 
     is_arch = _is_architectuur(cfs, cfids)
 
@@ -121,7 +122,14 @@ def _compute(item, mappings, thresholds, internal_rate):
     raw = [{"name": g.get("title"),
             "budget_eur": TL.amount(g.get("external_budget")),
             "spent_eur": TL.amount(g.get("external_budget_spent")),
-            "budget_hours": qh.get(_norm(g.get("title")), 0)} for g in groups]
+            # Real per-phase figures from the group itself; null when the
+            # 'Costs on projects' permission hides them (amount_or_none).
+            "billed_eur": TL.amount_or_none(g.get("amount_billed")),
+            "cost_eur": TL.amount_or_none(g.get("cost")),
+            "tracked_hours": TL.hours(g.get("time_tracked")),
+            # Budgeted hours on the group; quotation section hours as fallback.
+            "budget_hours": TL.hours(g.get("time_estimated")) or qh.get(_norm(g.get("title")), 0)}
+           for g in groups]
     phases = calc.build_phases(raw, thresholds)
     summary = calc.project_summary(phases)
 
@@ -131,19 +139,74 @@ def _compute(item, mappings, thresholds, internal_rate):
     besprekingen = sum(1 for e in entries
                        if (e.get("work_type") or {}).get("id") == wt.get("bespreking"))
 
-    # Real tracked hours (Teamleader time tracking) -- single source of truth for hours,
-    # consistent with the cost. Budget hours = the project's own Teamleader time budget.
+    def _edate(e):
+        return str(e.get("started_on") or e.get("started_at") or "")
+
+    # Distinct activity months (YYYY-MM) -> analyse period filter.
+    months = sorted({_edate(e)[:7] for e in entries if _edate(e)})
+
     total_tracked_h = sum((e.get("duration") or 0) for e in entries) / 3600
     uren_gepresteerd = round(total_tracked_h, 1)
-    uren_begroot = TL.hours(info.get("time_estimated"))
-    kost = round(total_tracked_h * internal_rate, 2)
-    # Margin = AWP quote − effective cost (can be NEGATIVE = over the quoted budget).
-    # No quote in Teamleader -> we can't judge the margin, so leave it blank ("—").
-    if offerte and offerte > 0:
-        marge, marge_pct = calc.margin(offerte, kost)
+    # Budget hours: sum over the groups (project.time_estimated is usually 0).
+    uren_begroot = round(sum(p["budget_hours"] for p in phases), 1) or TL.hours(info.get("time_estimated"))
+
+    # Hours per person (always available); cost per person ONLY when we know a
+    # rate -- Teamleader's API never exposes cost per user, just the total.
+    by_user = {}
+    for e in entries:
+        uid = (e.get("user") or {}).get("id")
+        h = (e.get("duration") or 0) / 3600
+        d = by_user.setdefault(uid, {"uid": uid, "hours": 0.0, "cost": 0.0, "rated": False})
+        d["hours"] += h
+        rate = _rate_for(rates_map, uid, _edate(e)[:10])
+        if rate is not None:
+            d["cost"] += h * rate
+            d["rated"] = True
+    per_person = sorted(
+        ({"uid": d["uid"], "hours": round(d["hours"], 1),
+          "cost": round(d["cost"], 2) if d["rated"] else None} for d in by_user.values()),
+        key=lambda d: -d["hours"])
+
+    # Effective cost — auto-detected source:
+    #  1) Teamleader's real cost (per person, historical rates) when the
+    #     'Costs on projects' permission exposes it (project, else Σ groups);
+    #  2) manual per-person rates (Beheer cost_rates table, with history);
+    #  3) last resort: flat internal rate (legacy behavior).
+    kost = TL.amount_or_none(info.get("cost"))
+    if kost is None:
+        group_costs = [p["cost_eur"] for p in phases if p.get("cost_eur") is not None]
+        kost = round(sum(group_costs), 2) if group_costs else None
+    cost_estimated = 0
+    kost_bron = "teamleader"
+    if kost is None:
+        cost_estimated = 1
+        kost = 0.0
+        any_flat = False
+        for e in entries:
+            h = (e.get("duration") or 0) / 3600
+            uid = (e.get("user") or {}).get("id")
+            rate = _rate_for(rates_map, uid, _edate(e)[:10])
+            if rate is None:
+                any_flat = True
+            kost += h * (rate if rate is not None else internal_rate)
+        kost = round(kost, 2)
+        # No entries -> no rate was applied at all; claiming "rates" would be a lie.
+        kost_bron = None if not entries else ("flat" if any_flat else "rates")
+
+    # Invoiced (gefactureerd): Teamleader amount_billed — project level, else Σ groups.
+    # Stays None when NO billing data is exposed at all (permission off), so the
+    # UI shows "—" instead of a fake real €0 (mirrors the cost-path handling).
+    gefactureerd = TL.amount_or_none(info.get("amount_billed"))
+    if gefactureerd is None:
+        billed = [p["billed_eur"] for p in phases if p.get("billed_eur") is not None]
+        gefactureerd = round(sum(billed), 2) if billed else None
+
+    # Margin = invoiced − effective cost (feedback ronde 2). Nothing invoiced
+    # yet -> "—" (None), to avoid a huge fake negative on running projects.
+    if gefactureerd and gefactureerd > 0:
+        marge, marge_pct = calc.margin(gefactureerd, kost)
     else:
         marge, marge_pct = None, None
-    cost_estimated = 0
 
     worst = None
     for p in phases:
@@ -159,6 +222,9 @@ def _compute(item, mappings, thresholds, internal_rate):
         "verantw_medewerker": "", "budget_klant": budget_klant, "offerte_awp": offerte,
         "raming_vo": raming_vo, "uren_begroot": uren_begroot,
         "uren_gepresteerd": uren_gepresteerd, "effectieve_kost": kost,
+        "gefactureerd": gefactureerd, "project_type": project_type,
+        "activity_json": json.dumps(months),
+        "uren_per_persoon_json": json.dumps(per_person), "kost_bron": kost_bron,
         "marge": marge, "marge_pct": marge_pct, "summary_status": summary["status"],
         "n_over": summary["n_over"], "n_warn": summary["n_warn"],
         "cost_estimated": cost_estimated, "werfbezoeken": werfbezoeken,
@@ -184,23 +250,54 @@ def run_full():
     count = 0
     try:
         mappings = _resolve_mappings()
+        try:
+            # Cache the Teamleader users for the Beheer per-person rates form
+            # (pages never call the API themselves).
+            store.set_config("tl_users", [
+                {"id": u.get("id"),
+                 "name": (" ".join(x for x in [u.get("first_name") or "",
+                                               u.get("last_name") or ""] if x)
+                          or u.get("email") or u.get("id"))}
+                for u in TL.list_users()])
+        except Exception:
+            pass
         thresholds = store.get_config("thresholds", config.DEFAULT_THRESHOLDS)
         internal_rate = store.get_config("internal_cost_rate", config.DEFAULT_INTERNAL_COST_RATE)
+        rates_map = store.cost_rate_map()
         items = TL.tl_all("projects-v2/projects.list", {}, size=20)
         seen = []
+        saw_tl_costs = False
+        failed = 0
         for item in items:
             if item.get("status") != "open":
                 continue
             try:
-                snap = _compute(item, mappings, thresholds, internal_rate)
+                snap = _compute(item, mappings, thresholds, internal_rate, rates_map)
             except Exception:
+                failed += 1      # transient API error on one project
                 continue
             store.upsert_snapshot(snap)
             _make_meldingen(snap)
             seen.append(snap["project_id"])
+            if not snap["cost_estimated"]:
+                saw_tl_costs = True
             count += 1
             time.sleep(0.3)
-        store.delete_snapshots_except(seen)
+        if count:
+            # Auto-detected: True when Teamleader exposed real costs (the
+            # 'Costs on projects' permission is on for the connected user).
+            store.set_config("has_project_costs", saw_tl_costs)
+        if failed:
+            # A project we couldn't compute is NOT gone from Teamleader. Pruning
+            # here would delete a live project (and, if every call failed, wipe
+            # the whole cache). Leave the old rows and retry next run.
+            store.set_sync_state(last_error=f"{failed} project(s) failed to sync")
+        else:
+            store.delete_snapshots_except(seen)
+            # Clean run only: every snapshot now has the current shape, so the
+            # boot self-heal (_loop) won't re-sync on the next deploy. A partial
+            # run leaves data_version stale on purpose -> it retries.
+            store.set_config("data_version", config.CURRENT_DATA_VERSION)
         store.set_sync_state(last_ok_at=store.now_iso(), projects_synced=count)
     except Exception as e:
         store.set_sync_state(last_error=str(e)[:300])
@@ -213,9 +310,17 @@ def trigger_sync():
 
 
 def _loop():
-    # initial run only if cache empty (avoid hammering on every redeploy)
+    # Initial run only when there is something to fix (avoid hammering the API
+    # on every redeploy):
+    #  - empty cache, or
+    #  - cache written by an older _compute (data_version) -> one self-heal sync,
+    #    so stale rows never show up under new labels. data_version lives on the
+    #    persistent volume and is bumped only after a successful run, so this
+    #    fires once; a failed heal simply retries on the next boot/interval.
     try:
         if not store.list_snapshots(architectuur_only=False):
+            run_full()
+        elif store.get_config("data_version", 0) != config.CURRENT_DATA_VERSION:
             run_full()
     except Exception:
         pass

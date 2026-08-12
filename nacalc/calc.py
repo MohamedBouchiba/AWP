@@ -1,10 +1,11 @@
 """Pure computation for the nacalculatie dashboard (no IO -> unit-testable).
 
-Per-phase status is driven by Teamleader's reliable per-group MONEY fields:
-  pct = external_budget_spent / external_budget  (rate cancels, so this equals
-  the hours-consumption ratio). Budget HOURS per phase come from the quotation
-  section quantities. Tracked hours per phase = pct * budget_hours.
-Color = budget status; glyph = progress. Mirrors the approved prototype logic.
+Per-phase status is driven by Teamleader's per-group MONEY fields:
+  pct = external_budget_spent / external_budget. Hours per phase are REAL
+  (group time_tracked / time_estimated, quotation hours as budget fallback);
+  billed_eur / cost_eur come from the group's amount_billed / cost (None when
+  the 'Costs on projects' permission hides them).
+Color = budget status; glyph = progress.
 """
 
 SEVERITY_ORDER = ["green", "amber", "red", "darkred"]
@@ -32,8 +33,13 @@ def _phase_sort_key(name):
         return (1, name or "")
 
 
+def _money_or_none(v):
+    return round(float(v), 2) if v is not None else None
+
+
 def build_phases(raw_phases, thresholds):
-    """raw_phases: list of {name, budget_eur, spent_eur, budget_hours} (any order).
+    """raw_phases: list of {name, budget_eur, spent_eur, budget_hours,
+    tracked_hours, billed_eur, cost_eur} (any order; last three optional).
 
     Returns ordered list of phase dicts with pct/color/glyph/flags computed.
     """
@@ -43,16 +49,20 @@ def build_phases(raw_phases, thresholds):
         be = float(p.get("budget_eur") or 0)
         se = float(p.get("spent_eur") or 0)
         bh = float(p.get("budget_hours") or 0)
+        th = float(p.get("tracked_hours") or 0)   # REAL hours (group time_tracked)
         applicable = be > 0
         pct = round(se / be * 100, 1) if be > 0 else None
-        started = se > 0
-        tracked_hours = round((pct or 0) / 100 * bh, 1) if applicable else 0.0
+        # Started = money consumed OR hours logged (hours can precede the first
+        # simulated-spend rollup, and this is the feedback's definition).
+        started = se > 0 or th > 0
         out.append({
             "naam": p.get("name"),
             "budget_eur": round(be, 2),
             "spent_eur": round(se, 2),
             "budget_hours": round(bh, 1),
-            "tracked_hours": tracked_hours,
+            "tracked_hours": round(th, 1),
+            "billed_eur": _money_or_none(p.get("billed_eur")),
+            "cost_eur": _money_or_none(p.get("cost_eur")),
             "pct": pct,
             "color": color_for(pct, thresholds),
             "applicable": applicable,
@@ -109,10 +119,11 @@ def project_totals(phases):
     }
 
 
-def margin(offerte_eur, kost_eur):
-    """Marge = offerte - effectieve kost (mirrors prototype/spec)."""
-    offerte = float(offerte_eur or 0)
+def margin(basis_eur, kost_eur):
+    """Marge = basis − effectieve kost, met pct t.o.v. de basis.
+    Basis = gefactureerd (feedback ronde 2); voorheen de offerte."""
+    basis = float(basis_eur or 0)
     kost = float(kost_eur or 0)
-    marge = round(offerte - kost, 2)
-    marge_pct = round(marge / offerte * 100) if offerte else 0
+    marge = round(basis - kost, 2)
+    marge_pct = round(marge / basis * 100) if basis else 0
     return marge, marge_pct

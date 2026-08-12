@@ -1,9 +1,25 @@
 # AUDIT DES CALCULS — Dashboard nacalculatie AWP Buro
 
+> ⚠️ **MISE À JOUR — feedback ronde 2 (2026-07-01).** Plusieurs constats ci-dessous sont **périmés**.
+> Ce qui a changé (voir `HANDOFF.md` §2/§7 et le code) :
+> - **Teamleader FOURNIT bien les heures par fase** : `time_tracked` / `time_estimated` sur le
+>   *projectGroup*. Les heures ne sont plus estimées via `pct × heures d'offerte` (périme §2 B1, §5 #4).
+> - **La kost n'est plus un forfait €65/h.** On lit `cost` (réel, par personne, historiquement
+>   correct) sur le projet/groupe. Si le droit *« Kosten op projecten »* est désactivé, ces champs
+>   sont `null` → fallback automatique sur les tarifs par personne (Beheer, avec historique), puis
+>   sur le tarif plat. Détection auto : clé de config `has_project_costs` (résout §5 #7).
+> - **Marge = gefactureerd (`amount_billed`) − kost effective**, et non plus « offerte − kost ».
+>   Rien de facturé → « — » (jamais un faux négatif). (Périme §2 B7, §5 #2.)
+> - **Une fase est « gestart » si € consommé OU heures loggées** (périme §2 B3/B4 ; résout §5 #1).
+> - **La page Analyse a 5 graphes** + un filtre période / sélection de projets (périme §4.3).
+> - Nouvelles colonnes snapshot : `gefactureerd`, `project_type`, `activity_json`.
+>
+> Restent valables : §0-§1 (flux, sources), §2 B2/B8/B9, §3 (popup, hors marge/kost), §4.1-§4.2.
+
 > Document de référence : pour chaque chiffre, graphe et champ de la popup, quelle est la **donnée
 > Teamleader**, la **méthode de calcul**, l'**objectif**, et les **axes d'amélioration**.
 > Recoupé avec le code : `nacalc/sync.py` (`_compute`), `nacalc/calc.py`, `nacalc/views.py`,
-> `nacalc/templates.py`. (Version : 2026-06-30.)
+> `nacalc/templates.py` (aujourd'hui `nacalc/ui/pages.py`). (Version initiale : 2026-06-30.)
 
 ## 0. Principe général
 **Flux :** Teamleader (`projects-v2`) → **sync** (calcul) → **cache SQLite** (1 snapshot/projet) →

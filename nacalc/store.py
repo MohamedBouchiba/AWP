@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS project_snapshot (
   project_id TEXT PRIMARY KEY, project_key TEXT, titel TEXT, naam TEXT, adres TEXT,
   status TEXT, is_architectuur INTEGER NOT NULL DEFAULT 1, categorie TEXT, contracttype TEXT,
   verantw_arch TEXT, verantw_medewerker TEXT, budget_klant REAL, offerte_awp REAL, raming_vo REAL,
-  uren_begroot REAL, uren_gepresteerd REAL, effectieve_kost REAL, marge REAL, marge_pct REAL,
+  uren_begroot REAL, uren_gepresteerd REAL, effectieve_kost REAL, gefactureerd REAL,
+  marge REAL, marge_pct REAL, project_type TEXT, activity_json TEXT,
+  uren_per_persoon_json TEXT, kost_bron TEXT,
   summary_status TEXT, n_over INTEGER, n_warn INTEGER, cost_estimated INTEGER NOT NULL DEFAULT 0,
   werfbezoeken INTEGER, besprekingen INTEGER, attention_note TEXT, phases_json TEXT, synced_at TEXT);
 CREATE TABLE IF NOT EXISTS meldingen (
@@ -49,10 +51,25 @@ def now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+# Columns added after the first production deploy. CREATE TABLE IF NOT EXISTS
+# won't touch an existing table, so add them idempotently on every boot.
+_MIGRATE_SNAPSHOT_COLS = (
+    ("gefactureerd", "REAL"),
+    ("project_type", "TEXT"),
+    ("activity_json", "TEXT"),
+    ("uren_per_persoon_json", "TEXT"),
+    ("kost_bron", "TEXT"),
+)
+
+
 def init_db():
     with _conn() as c:
         c.executescript(_SCHEMA)
         c.execute("INSERT OR IGNORE INTO sync_state(id, running) VALUES (1, 0)")
+        existing = {r["name"] for r in c.execute("PRAGMA table_info(project_snapshot)")}
+        for col, typ in _MIGRATE_SNAPSHOT_COLS:
+            if col not in existing:
+                c.execute(f"ALTER TABLE project_snapshot ADD COLUMN {col} {typ}")
     _seed_default_config()
 
 
@@ -135,11 +152,22 @@ def list_cost_rates():
 
 
 def cost_rate_map():
-    """{tl_user_id: [(effective_from, eur_per_hour), ...] desc} for date lookup."""
+    """{tl_user_id: [(effective_from, eur_per_hour), ...] desc} for date lookup.
+
+    sync._rate_for() walks each list top-down and takes the first row whose
+    effective_from <= the entry date, so the per-user list MUST be sorted by
+    effective_from descending. list_cost_rates() orders by name first (display
+    order), which breaks that when a user's name changed between rows -- so we
+    re-sort here. Ties on the same date: the most recently inserted row (highest
+    id) wins, so a same-day correction supersedes the original.
+    """
     out = {}
     for r in list_cost_rates():
-        out.setdefault(r["tl_user_id"], []).append((r["effective_from"], r["eur_per_hour"]))
-    return out
+        out.setdefault(r["tl_user_id"], []).append(
+            (r["effective_from"], r["eur_per_hour"], r["id"]))
+    return {uid: [(eff, rate) for eff, rate, _ in
+                  sorted(rows, key=lambda x: (x[0], x[2]), reverse=True)]
+            for uid, rows in out.items()}
 
 
 def has_cost_rates():
@@ -152,6 +180,8 @@ def upsert_snapshot(s):
     cols = ["project_id", "project_key", "titel", "naam", "adres", "status", "is_architectuur",
             "categorie", "contracttype", "verantw_arch", "verantw_medewerker", "budget_klant",
             "offerte_awp", "raming_vo", "uren_begroot", "uren_gepresteerd", "effectieve_kost",
+            "gefactureerd", "project_type", "activity_json",
+            "uren_per_persoon_json", "kost_bron",
             "marge", "marge_pct", "summary_status", "n_over", "n_warn", "cost_estimated",
             "werfbezoeken", "besprekingen", "attention_note", "phases_json", "synced_at"]
     vals = [s.get(c) for c in cols]

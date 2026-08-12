@@ -19,6 +19,12 @@ DEFAULT_FRONT_OFFICE_RATE = 90.0  # legacy alias (kept for compatibility)
 # Sync cadence
 DEFAULT_SYNC_INTERVAL_MINUTES = int(os.environ.get("SYNC_INTERVAL_MINUTES", "60"))
 
+# Shape of the data written into project_snapshot. Bump this whenever _compute
+# starts producing new/changed fields: on boot, a cache written by an older
+# version is refreshed once (see sync._loop), so the UI never shows stale rows
+# under new labels. Only bumped after a SUCCESSFUL full sync.
+CURRENT_DATA_VERSION = 3
+
 # Project custom-field labels we map to ids on first sync (Teamleader 'project' context).
 CF_LABELS = {
     "architectuur": "Architectuur",

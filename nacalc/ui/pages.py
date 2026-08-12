@@ -6,8 +6,8 @@ import os
 from html import escape as esc
 
 from ..i18n import t
-from .components import (eur, h1, dots, bar_color, _uren_ratio_color,
-                        _status_cell, _abar)
+from .components import (eur, h1, hb, dots, bar_color, _uren_ratio_color,
+                        _status_cell, _abar, visible_marge, visible_marge_pct)
 
 _CSS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -81,14 +81,16 @@ function openDrawer(id){{fetch('/app/project/'+id).then(r=>r.text()).then(h=>{{d
 function closeDrawer(){{document.getElementById('drawer').classList.remove('show');document.getElementById('scrim').classList.remove('show');}}
 function syncNow(b){{b.disabled=true;b.textContent='…';fetch('/app/sync',{{method:'POST'}}).then(()=>poll());}}
 function poll(){{fetch('/app/sync/state').then(r=>r.json()).then(s=>{{var p=document.getElementById('syncPill');if(s.running){{p.innerHTML='<span class="dot" style="background:var(--amber)"></span> {esc(t('syncing',lang))}';setTimeout(poll,2500);}}else{{location.reload();}}}});}}
-function applyFilters(){{var c=v('fCat'),ct=v('fCon'),st=v('fSt'),q=(v('fSearch')||'').toLowerCase(),g=v('fGestart');
-document.querySelectorAll('#rows tr').forEach(function(tr){{var d=tr.dataset;var ok=(!c||d.cat===c)&&(!ct||d.con===ct)&&(!st||d.st===st)&&(!q||(d.search||'').indexOf(q)>=0)&&(g!=='ja'||d.status!=='0');tr.style.display=ok?'':'none';}});}}
+function applyFilters(){{var c=v('fCat'),ct=v('fCon'),st=v('fSt'),q=(v('fSearch')||'').toLowerCase(),g=v('fGestart');var vis=0;
+document.querySelectorAll('#rows tr[data-nr]').forEach(function(tr){{var d=tr.dataset;var ok=(!c||d.cat===c)&&(!ct||d.con===ct)&&(!st||d.st===st)&&(!q||(d.search||'').indexOf(q)>=0)&&(g!=='ja'||(d.started||'0')!=='0');tr.style.display=ok?'':'none';if(ok)vis++;}});
+var nr=document.getElementById('noRows');if(nr){{nr.style.display=vis?'none':'';}}}}
 function v(id){{var e=document.getElementById(id);return e?e.value:'';}}
 function sortTable(key,numeric){{var tb=document.getElementById('rows');if(!tb)return;var rows=[].slice.call(tb.querySelectorAll('tr'));var same=tb.getAttribute('data-sk')===key&&tb.getAttribute('data-sd')==='1';var dir=same?-1:1;rows.sort(function(a,b){{var x=a.dataset[key]||'',y=b.dataset[key]||'';if(numeric){{return ((parseFloat(x)||0)-(parseFloat(y)||0))*dir;}}return String(x).localeCompare(String(y))*dir;}});rows.forEach(function(r){{tb.appendChild(r);}});tb.setAttribute('data-sk',key);tb.setAttribute('data-sd',dir===1?'1':'0');}}
 function toggleSidebar(){{var a=document.querySelector('.app');var c=a.classList.toggle('collapsed');document.cookie='sidebar='+(c?'collapsed':'open')+';path=/;max-age=31536000;samesite=Lax';}}
 document.addEventListener('keydown',function(e){{if(e.key==='Escape')closeDrawer();}});
 var SYNCING={"true" if syncing else "false"};
 if(SYNCING){{poll();}}
+if(document.getElementById('fGestart')){{applyFilters();}}
 </script>
 </body></html>"""
 
@@ -126,19 +128,21 @@ def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_ba
               f'<span class="li"><span class="pdot c-good st-progress" style="animation:none"></span> {esc(t("lg_progress",lang))}</span>'
               f'<span class="li"><span class="pdot c-warn"></span> {esc(t("lg_warn",lang))}</span>'
               f'<span class="li"><span class="pdot c-over"></span> {esc(t("lg_over",lang))}</span>'
-              f'<span class="li"><span class="pdot c-todo"></span> {esc(t("lg_todo",lang))}</span></div>')
+              f'<span class="li"><span class="pdot c-todo"></span> {esc(t("lg_todo",lang))}</span>'
+              f'<span class="li"><span class="pdot c-none"></span> {esc(t("lg_na",lang))}</span></div>')
     rows = []
     for s in snaps:
         phases = json.loads(s["phases_json"] or "[]")
+        n_started = sum(1 for p in phases if p.get("started"))
         begroot = s["uren_begroot"] or 0
         gepr = s["uren_gepresteerd"] or 0
         r = gepr / begroot if begroot else 0
         rowcls, stcell = _status_cell(lang, s)
-        marge = s["marge"]
+        marge = visible_marge(s)   # None unless something is actually invoiced
         if marge is not None:
             marge_chip = f'<span class="marge-chip {"pos" if marge >= 0 else "neg"}">{eur(marge)}</span>'
         else:
-            marge_chip = f'<span style="color:var(--muted)" title="{esc(t("rates_missing",lang))}">—</span>'
+            marge_chip = f'<span style="color:var(--muted)" title="{esc(t("marge_none_tip",lang))}">—</span>'
         sub = esc(s["adres"] or s["categorie"] or "")
         search = esc(" ".join(str(x) for x in [s["project_key"], s["naam"], s["adres"],
                      s["verantw_arch"]] if x).lower())
@@ -147,6 +151,7 @@ def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_ba
             f' data-st="{ {"over":"over","warn":"warn","ok":"ok","none":""}[s["summary_status"]] }" data-search="{search}"'
             f' data-status="{rank.get(s["summary_status"],0)}" data-offerte="{s["offerte_awp"] or 0}"'
             f' data-marge="{marge if marge is not None else 0}" data-pct="{r*100:.0f}" data-nr="{esc(s["project_key"] or "")}"'
+            f' data-started="{n_started}"'
             f' onclick="openDrawer(\'{s["project_id"]}\')">'
             f'<td>{stcell}</td>'
             f'<td><div class="pcell"><span class="pkey">{esc(s["project_key"] or "—")}</span>'
@@ -157,7 +162,7 @@ def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_ba
             f'<td class="num">{eur(s["budget_klant"])}</td>'
             f'<td class="num">{eur(s["offerte_awp"])}</td>'
             f'<td><div class="bar"><i style="width:{min(r*100,100):.0f}%;background:{_uren_ratio_color(r)}"></i></div>'
-            f'<div class="barlab">{h1(gepr)} / {h1(begroot)}u · {(f"{r*100:.0f}%" if begroot else "—")}</div></td>'
+            f'<div class="barlab">{h1(gepr)} / {hb(begroot)}u · {(f"{r*100:.0f}%" if begroot else "—")}</div></td>'
             f'<td>{dots(phases)}</td>'
             f'<td class="num">{marge_chip}</td></tr>')
     body = "".join(rows) or (f'<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px">{esc(t("no_projects",lang))}</td></tr>')
@@ -168,7 +173,7 @@ def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_ba
 <select id="fCon" onchange="applyFilters()"><option value="">{esc(t('f_all_con',lang))}</option>{con_opts}</select>
 <select id="fSt" onchange="applyFilters()"><option value="">{esc(t('f_all_st',lang))}</option>
 <option value="over">{esc(t('f_over',lang))}</option><option value="warn">{esc(t('f_warn',lang))}</option><option value="ok">{esc(t('f_ok',lang))}</option></select>
-<select id="fGestart" onchange="applyFilters()"><option value="">{esc(t('f_started_all',lang))}</option><option value="ja">{esc(t('f_started_only',lang))}</option></select>
+<select id="fGestart" onchange="applyFilters()"><option value="">{esc(t('f_started_all',lang))}</option><option value="ja" selected>{esc(t('f_started_only',lang))}</option></select>
 <span class="pill type-pill">{esc(t('type_arch',lang))}</span></div>
 {legend}
 <div class="card"><div class="tablewrap"><table><thead><tr>
@@ -178,12 +183,56 @@ def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_ba
 <th class="num">{esc(t('th_budget_klant',lang))}</th>
 <th class="num sortable" onclick="sortTable('offerte',1)">{esc(t('th_offerte',lang))}<span class="ar">⇅</span></th>
 <th class="sortable" onclick="sortTable('pct',1)">{esc(t('th_uren',lang))}<span class="ar">⇅</span></th>
-<th>{esc(t('th_fases',lang))}</th>
+<th class="sortable" onclick="sortTable('started',1)">{esc(t('th_fases',lang))}<span class="ar">⇅</span></th>
 <th class="num sortable" onclick="sortTable('marge',1)">{esc(t('th_marge',lang))}<span class="ar">⇅</span></th>
-</tr></thead><tbody id="rows">{body}</tbody></table></div></div>
+</tr></thead><tbody id="rows">{body}<tr id="noRows" style="display:none"><td colspan="10" style="text-align:center;color:var(--muted);padding:30px">{esc(t('no_projects',lang))}</td></tr></tbody></table></div></div>
 <div class="foot-note">{esc(t('ov_foot',lang))}</div>"""
 
-def render_drawer(lang, s):
+def _per_person(lang, s, is_admin, user_names):
+    """'Uren per medewerker' table. Hours are visible to every logged-in user;
+    the cost/rate column is ADMIN-ONLY and is therefore built server-side --
+    a non-admin never receives the numbers in the HTML at all.
+
+    Teamleader's API does not expose cost per person (only the project/group
+    total), so per-person cost is filled in only when a rate exists in Beheer.
+    """
+    import json
+    rows = json.loads(s.get("uren_per_persoon_json") or "[]")
+    if not rows:
+        return ""
+    names = user_names or {}
+    # The per-person cost comes from the Beheer rates. When the total above is
+    # Teamleader's own cost, the two have different bases and would not add up,
+    # so we show hours only and say why -- never two numbers that can't reconcile.
+    show_cost = is_admin and s.get("kost_bron") in ("rates", "flat")
+    head = (f'<th style="text-align:left">{esc(t("dr_pp_name",lang))}</th>'
+            f'<th class="num">{esc(t("dr_pp_hours",lang))}</th>')
+    if show_cost:
+        head += f'<th class="num">{esc(t("dr_pp_cost",lang))}</th>'
+    body = ""
+    for r in rows:
+        naam = names.get(r.get("uid")) or r.get("uid") or "—"
+        body += (f'<tr><td>{esc(str(naam))}</td>'
+                 f'<td class="num">{h1(r.get("hours"))}u</td>')
+        if show_cost:
+            c = r.get("cost")
+            body += (f'<td class="num">{eur(c)}</td>' if c is not None
+                     else f'<td class="num" title="{esc(t("dr_pp_none",lang))}">—</td>')
+        body += "</tr>"
+    if is_admin and s.get("kost_bron") == "teamleader":
+        cap = t("dr_pp_tl_note", lang)
+    elif show_cost and any(r.get("cost") is None for r in rows):
+        cap = t("dr_pp_partial", lang)
+    else:
+        cap = ""
+    cap_html = (f'<div style="font-size:10.5px;color:var(--muted);padding:6px 2px 2px">{esc(cap)}</div>'
+                if cap else "")
+    return (f'<div class="sec-t">{esc(t("dr_pp_title",lang))}</div>'
+            f'<div class="card" style="padding:2px 14px 6px"><table class="pp"><thead><tr>{head}</tr></thead>'
+            f'<tbody>{body}</tbody></table>{cap_html}</div>')
+
+
+def render_drawer(lang, s, is_admin=False, user_names=None):
     import json
     phases = json.loads(s["phases_json"] or "[]")
     chip_map = {"over": ("c-over", t("st_over", lang)), "warn": ("c-warn", t("st_warn", lang)),
@@ -192,7 +241,7 @@ def render_drawer(lang, s):
     fase_rows = []
     for p in phases:
         if not p["applicable"]:
-            fase_rows.append(f'<div class="fase-row" style="opacity:.55"><div class="fr-top">'
+            fase_rows.append(f'<div class="fase-row fase-na"><div class="fr-top">'
                              f'<span class="fr-name">{esc(p["naam"])}</span><span class="tag">{esc(t("ph_na",lang))}</span></div></div>')
             continue
         r = (p["pct"] or 0) / 100
@@ -212,12 +261,24 @@ def render_drawer(lang, s):
             f'<div class="fase-row"><div class="fr-top"><span class="fr-name">{esc(p["naam"])}</span>'
             f'<span class="tag" style="color:{bar_color(p["color"])}">{esc(lab)}</span></div>'
             f'<div class="fbar"><i style="width:{min(r*100,100):.0f}%;background:{bar_color(p["color"])}"></i></div>'
-            f'<div class="fr-meta"><span>{eur(p["spent_eur"])} / {eur(p["budget_eur"])} verbruikt</span><span>{p["pct"] if p["pct"] is not None else 0}%</span></div></div>')
-    note = ""  # "Aandachtspunt" note removed per request
+            f'<div class="fr-meta"><span>{eur(p["spent_eur"])} / {eur(p["budget_eur"])} {esc(t("ph_verbruikt",lang))}</span><span>{p["pct"] if p["pct"] is not None else 0}%</span></div>'
+            f'<div class="fr-meta"><span>{h1(p.get("tracked_hours"))} / {hb(p.get("budget_hours"))}u {esc(t("ph_uren_lab",lang))}</span></div></div>')
+    # Teamleader has no time budget on (some) phases -> explain the dashes.
+    budget_missing = any(p.get("applicable") and not p.get("budget_hours") for p in phases)
+    note = (f'<div style="font-size:11px;color:var(--muted);margin-top:6px">{esc(t("ph_budget_missing",lang))}</div>'
+            if budget_missing else "")
     kost_html = eur(s["effectieve_kost"]) if s["effectieve_kost"] is not None else f'<span style="font-size:12px;color:var(--muted)">{esc(t("rates_missing",lang))}</span>'
-    est = f' <span style="font-size:11px;color:var(--muted)">{esc(t("estimate_flag",lang))}</span>' if s["cost_estimated"] else ""
-    marge_html = (f'{eur(s["marge"])} · {s["marge_pct"]}%' if s["marge"] is not None else "—")
-    marge_col = "var(--green)" if (s["marge"] or 0) >= 0 else "var(--red)"
+    src_key = {"teamleader": "kost_src_tl", "rates": "kost_src_rates",
+               "flat": "kost_src_flat"}.get(s.get("kost_bron"))
+    est = (f'<div style="font-size:10.5px;color:var(--muted);font-weight:600;margin-top:2px">{esc(t(src_key,lang))}</div>'
+           if src_key else
+           (f' <span style="font-size:11px;color:var(--muted)">{esc(t("estimate_flag",lang))}</span>'
+            if s["cost_estimated"] else ""))
+    mv, mp = visible_marge(s), visible_marge_pct(s)
+    marge_html = (f'{eur(mv)} · {mp}%' if mv is not None
+                  else f'<span title="{esc(t("marge_none_tip",lang))}">—</span>')
+    marge_col = "var(--green)" if (mv or 0) >= 0 else "var(--red)"
+    pp_html = _per_person(lang, s, is_admin, user_names)
     return f"""<div class="dr-head"><button class="x" onclick="closeDrawer()">×</button>
 <h2>{esc(s["project_key"] or "")} · {esc(s["naam"] or "")}</h2>
 <div class="m">{esc(s["adres"] or "")} &nbsp;•&nbsp; {esc(s["verantw_arch"] or "")}</div>
@@ -227,12 +288,14 @@ def render_drawer(lang, s):
 <div class="mc"><div class="l">{esc(t('dr_budget_klant',lang))}</div><div class="v">{eur(s["budget_klant"])}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_raming',lang))}</div><div class="v">{eur(s["raming_vo"])}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_offerte',lang))}</div><div class="v">{eur(s["offerte_awp"])}</div></div>
-<div class="mc"><div class="l">{esc(t('dr_uren',lang))}</div><div class="v">{h1(s["uren_gepresteerd"])} / {h1(s["uren_begroot"])}</div></div>
+<div class="mc"><div class="l">{esc(t('dr_gefactureerd',lang))}</div><div class="v">{eur(s.get("gefactureerd"))}</div></div>
+<div class="mc"><div class="l">{esc(t('dr_uren',lang))}</div><div class="v">{h1(s["uren_gepresteerd"])} / {hb(s["uren_begroot"])}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_kost',lang))}</div><div class="v">{kost_html}{est}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_marge',lang))}</div><div class="v" style="color:{marge_col}">{marge_html}</div></div>
 </div>
 <div class="sec-t">{esc(t('dr_voortgang',lang))}</div>{"".join(fase_rows)}
 <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">{esc(t('ph_caption',lang))}</div>{note}
+{pp_html}
 <div class="sec-t">{esc(t('dr_visits',lang))}</div><div class="meta-grid">
 <div class="mc"><div class="l">{esc(t('dr_werfbezoek',lang))}</div><div class="v">{s["werfbezoeken"] or 0}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_bespreking',lang))}</div><div class="v">{s["besprekingen"] or 0}</div></div>
@@ -253,61 +316,153 @@ def render_meldingen(lang, items):
             f'<button class="btn" onclick="openDrawer(\'{m["project_id"]}\')">{esc(t("ml_view",lang))} →</button></div></div>')
     return "".join(out)
 
-def render_analyse(lang, fases, contracts, cats, raming):
-    def panel(tk, sk, ik, inner):
+def render_analyse(lang, g1, g2, g3, g4, g5, g6, f):
+    """Six graphs over the selected projects (period or explicit selection).
+    g1 (naam, billed, budget, delta_pct, n) · g2 (naam, tracked, budget_h, pct, n)
+    g3/g4/g6 (naam, marge, billed, cost, n) · g5 (naam, avg_h, n) · f = filter state."""
+    def panel(tk, sk, ik, inner, empty_key="an_empty"):
+        empty = f'<p class="panel-s">{esc(t(empty_key,lang))}</p>'
         return (f'<div class="card" style="padding:20px 22px"><p class="panel-t">{esc(t(tk,lang))}'
                 f'<span class="pinfo" title="{esc(t(ik,lang))}">i</span></p>'
-                f'<p class="panel-s">{esc(t(sk,lang))}</p>{inner or "<p class=\'panel-s\'>"+esc(t("an_empty",lang))+"</p>"}</div>')
+                f'<p class="panel-s">{esc(t(sk,lang))}</p>{inner or empty}</div>')
 
-    # 1) Budget used per phase: bar = % consumed, FULL at >=100% (over budget).
-    f_html = ""
-    for naam, pct, n in fases:
+    # --- filter bar. Period / custom range / project selection are mutually
+    # exclusive: the JS below clears the others, and _select_snapshots enforces
+    # the same precedence server-side.
+    def opt(val, key):
+        sel = " selected" if f["period"] == val else ""
+        return f'<option value="{val}"{sel}>{esc(t(key,lang))}</option>'
+    period_sel = ('<select id="fPeriod" name="period" onchange="anPeriod()">'
+                  + opt("", "an_period_all") + opt("1", "an_period_1")
+                  + opt("3", "an_period_3") + opt("6", "an_period_6") + opt("12", "an_period_12")
+                  + opt("custom", "an_period_custom") + '</select>')
+    # Self-contained searchable multi-select (no library). Search only HIDES
+    # options, never removes them, so a checked-but-filtered project still submits.
+    opts = "".join(
+        f'<label class="ms-opt" data-lbl="{esc(lbl.lower())}">'
+        f'<input type="checkbox" name="pids" value="{esc(pid)}"'
+        f'{" checked" if pid in f["pids"] else ""} onchange="anPids()"> {esc(lbl)}</label>'
+        for pid, lbl in f["projects"])
+    ms = (f'<div class="ms" id="ms">'
+          f'<button class="ms-btn" type="button" onclick="msToggle(event)" title="{esc(t("an_projects_hint",lang))}">'
+          f'<span id="msLabel">{esc(t("an_ms_none",lang))}</span> ▾</button>'
+          f'<div class="ms-panel" id="msPanel" hidden>'
+          f'<input class="ms-search" type="text" oninput="msFilter(this.value)" placeholder="{esc(t("an_ms_placeholder",lang))}">'
+          f'<div class="ms-list">{opts}</div></div></div>')
+    fbar = (f'<form class="filters" id="anForm" method="get" action="/app/analyse">{period_sel}'
+            f'<input type="month" id="fFrom" name="from" value="{esc(f["from"])}" title="{esc(t("an_from",lang))}" onchange="anRange()">'
+            f'<input type="month" id="fTo" name="to" value="{esc(f["to"])}" title="{esc(t("an_to",lang))}" onchange="anRange()">'
+            f'{ms}'
+            f'<button class="btn" type="submit" style="height:40px">{esc(t("an_apply",lang))}</button>'
+            f'<a class="btn" href="/app/analyse" style="height:40px;display:inline-flex;align-items:center">{esc(t("an_reset",lang))}</a>'
+            f'<span class="pill type-pill">{esc(t("an_sel_note",lang).format(n=f["n_sel"]))}</span>'
+            f'<button class="btn btn-exp" type="submit" formaction="/app/analyse/export">⤓ {esc(t("an_export",lang))}</button>'
+            f'</form>')
+    ms_count_tpl = t("an_ms_count", lang).replace("{n}", "__N__")
+    fjs = f"""<script>
+function msToggle(e){{var p=document.getElementById('msPanel');p.hidden=!p.hidden;if(e)e.stopPropagation();}}
+function msFilter(q){{q=(q||'').toLowerCase();
+document.querySelectorAll('#msPanel .ms-opt').forEach(function(o){{o.style.display=(!q||(o.dataset.lbl||'').indexOf(q)>=0)?'':'none';}});}}
+function msChecked(){{return [].slice.call(document.querySelectorAll('#msPanel input[name=pids]:checked'));}}
+function msSync(){{var n=msChecked().length;
+document.getElementById('msLabel').textContent = n ? {ms_count_tpl!r}.replace('__N__',n) : {t("an_ms_none", lang)!r};
+document.getElementById('ms').classList.toggle('has-sel', n>0);}}
+function anPids(){{ // a project selection clears the period filters
+  if(msChecked().length){{document.getElementById('fPeriod').value='';
+    document.getElementById('fFrom').value='';document.getElementById('fTo').value='';}}
+  msSync();}}
+function anPeriod(){{ // choosing a period clears the range (unless custom) + projects
+  var v=document.getElementById('fPeriod').value;
+  if(v!=='custom'){{document.getElementById('fFrom').value='';document.getElementById('fTo').value='';}}
+  msChecked().forEach(function(c){{c.checked=false;}}); msSync();}}
+function anRange(){{ // typing a from/to means "custom", and clears the projects
+  document.getElementById('fPeriod').value='custom';
+  msChecked().forEach(function(c){{c.checked=false;}}); msSync();}}
+document.addEventListener('click',function(e){{var m=document.getElementById('ms');
+if(m&&!m.contains(e.target)){{document.getElementById('msPanel').hidden=true;}}}});
+msSync();
+</script>"""
+
+    # 1) Invoiced vs quote budget per phase: bar = billed/budget, label = ±delta%.
+    h = ""
+    for naam, billed, budget, delta, n in g1:
+        color = "var(--red)" if delta > 15 else "var(--amber)" if delta > 0 else "var(--green)"
+        tip = t("an1_tip", lang).format(billed=eur(billed), budget=eur(budget), delta=delta, n=n)
+        h += _abar(naam, (billed / budget * 100) if budget else 0, f"{delta:+d}%", color, tip)
+    p1 = panel("an1_t", "an1_s", "an1_info", h)
+
+    # 2) Tracked vs budgeted hours per phase. Empty when Teamleader has no time
+    # budget on any phase -> say so explicitly instead of "not enough data".
+    h = ""
+    for naam, tracked, budget, pct, n in g2:
         color = "var(--red)" if pct >= 100 else "var(--amber)" if pct >= 80 else "var(--green)"
-        tip = t("an_tip_fase", lang).format(naam=naam, pct=pct, n=n)
-        f_html += _abar(naam, min(pct, 100), f"{pct}%", color, tip)
+        tip = t("an2_tip", lang).format(tracked=tracked, budget=budget, pct=pct, n=n)
+        h += _abar(naam, min(pct, 100), f"{pct}%", color, tip)
+    p2 = panel("an2_t", "an2_s", "an2_info", h, empty_key="an2_empty")
 
-    # 2) Profitability per contract type: bar = margin magnitude (scaled to 80).
-    c_html = ""
-    for naam, pct, n in contracts:
-        color = "var(--green)" if pct > 40 else "var(--amber)" if pct > 20 else "var(--red)"
-        tip = t("an_tip_con", lang).format(naam=naam, pct=pct, n=n)
-        c_html += _abar(naam, abs(pct) / 80 * 100, f"{'+' if pct >= 0 else ''}{pct}%", color, tip)
+    # 3/4/6) Profitability (€): bar scaled to the largest |margin| in the graph.
+    def profit_bars(rows, tipkey):
+        mx = max((abs(m) for _, m, _b, _c, _n in rows), default=0) or 1
+        out = ""
+        for naam, marge, billed, cost, n in rows:
+            color = "var(--green)" if marge >= 0 else "var(--red)"
+            tip = t(tipkey, lang).format(billed=eur(billed), cost=eur(cost), marge=eur(marge), n=n)
+            out += _abar(naam, abs(marge) / mx * 100, eur(marge), color, tip)
+        return out
+    p3 = panel("an3_t", "an3_s", "an3_info", profit_bars(g3, "an3_tip"))
+    p4 = panel("an4_t", "an4_s", "an4_info", profit_bars(g4, "an4_tip"))
+    p6 = panel("an6_t", "an6_s", "an6_info", profit_bars(g6, "an6_tip"))
 
-    # 3) Over-budget share per category: bar = % of projects over budget.
-    cat_html = ""
-    for naam, pct, n, n_over in cats:
-        color = "var(--red)" if pct > 50 else "var(--amber)" if pct > 0 else "var(--green)"
-        tip = t("an_tip_cat", lang).format(naam=naam, pct=pct, n=n, n_over=n_over)
-        cat_html += _abar(naam, pct, f"{pct}%", color, tip)
+    # 5) Average tracked hours per started phase.
+    h = ""
+    mx = max((v for _, v, _n in g5), default=0) or 1
+    for naam, avg, n in g5:
+        tip = t("an5_tip", lang).format(avg=avg, naam=naam, n=n)
+        h += _abar(naam, avg / mx * 100, f"{avg}u", "var(--accent)", tip)
+    p5 = panel("an5_t", "an5_s", "an5_info", h)
 
-    # 4) Projects with a client budget: over/on-track status.
-    r_html = ""
-    for nr, over, budget in raming:
-        status = t("st_over", lang) if over else t("st_ok", lang)
-        tip = t("an_tip_raming", lang).format(budget=eur(budget), status=status)
-        col = "var(--red)" if over else "var(--accent)"
-        bg = "var(--red-bg)" if over else "var(--grey-bg)"
-        r_html += (f'<div class="arow" title="{esc(tip)}"><div class="an">{esc(nr)}</div>'
-                   f'<div class="abar" style="background:{bg}"><i style="width:{85 if over else 55}%;background:{col}">{esc(status)}</i></div>'
-                   f'<div class="av">{"⚠" if over else "✓"}</div></div>')
+    return (f'<p class="panel-s" style="margin-bottom:12px">{esc(t("an_sub",lang))}</p>{fbar}'
+            f'<div class="grid2">{p1}{p2}{p3}{p4}{p5}{p6}</div>{fjs}')
 
-    return (f'<p class="panel-s" style="margin-bottom:18px">{esc(t("an_sub",lang))}</p><div class="grid2">'
-            + panel("an_fases_t", "an_fases_s", "an_info_fase", f_html) + panel("an_con_t", "an_con_s", "an_info_con", c_html)
-            + panel("an_cat_t", "an_cat_s", "an_info_cat", cat_html) + panel("an_raming_t", "an_raming_s", "an_info_raming", r_html) + "</div>")
-
-def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved):
+def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
+                  has_tl_costs=None, tl_users=None, cost_rates=None):
     msg = f'<div class="savemsg">{esc(t("be_saved",lang))}</div>' if saved else ""
     user_rows = "".join(
         f'<div class="be-row"><span class="nm">{esc(u["naam"] or u["email"])}</span>'
         f'<span style="color:var(--muted);font-size:12px">{esc(u["email"])}</span>'
         f'{"<span class=tag>"+esc(t("be_admin",lang))+"</span>" if u["is_admin"] else ""}</div>' for u in users)
     th = thresholds
+
+    # Per-person cost rates (with history). Primary mode (costs from Teamleader)
+    # shows them as fallback-only; fallback mode asks to fill them in.
+    note_key = "be_costs_tl_note" if has_tl_costs else "be_costs_manual_note"
+    tl_users = tl_users or []
+    if tl_users:
+        user_opts = "".join(f'<option value="{esc(u["id"])}">{esc(u["name"])}</option>' for u in tl_users)
+        user_input = f'<select name="tl_user_id" required><option value="">—</option>{user_opts}</select>'
+    else:
+        user_input = f'<input name="tl_user_id" placeholder="Teamleader user id" required>'
+    rate_rows = "".join(
+        f'<div class="be-row"><span class="nm">{esc(r["tl_user_naam"] or r["tl_user_id"])}</span>'
+        f'<span class="num">€{r["eur_per_hour"]:.2f}/u</span>'
+        f'<span style="color:var(--muted);font-size:12px">{esc(t("be_eff_from",lang))} {esc(r["effective_from"])}</span></div>'
+        for r in (cost_rates or []))
+    person_rates = f"""<div class="be-card"><h2>{esc(t('be_rates',lang))}</h2>
+<p class="panel-s">{esc(t(note_key,lang))}</p>
+{rate_rows}
+<form method="post" action="/app/beheer" style="margin-top:10px"><input type="hidden" name="form" value="costrate">
+<div class="be-row">{user_input}
+<input name="eur_per_hour" type="number" step="0.01" min="0" placeholder="€/u" style="width:100px" required>
+<span style="font-size:12px;color:var(--muted)">{esc(t('be_eff_from',lang))}</span><input name="effective_from" type="date">
+<button class="btn" type="submit">{esc(t('be_add_rate',lang))}</button></div></form></div>"""
+
     return f"""{msg}
 <div class="be-card"><h2>{esc(t('be_rates_title',lang))}</h2>
 <form method="post" action="/app/beheer"><input type="hidden" name="form" value="rates">
 <div class="be-row"><span class="nm">{esc(t('be_internal_cost',lang))}</span><input name="internal_cost_rate" type="number" step="0.01" value="{internal_rate}" style="width:120px"> €/u</div>
 <div class="be-row"><span class="nm">{esc(t('be_external_rate',lang))}</span><input name="external_rate" type="number" step="0.01" value="{external_rate}" style="width:120px"> €/u</div>
 <button class="btn" style="margin-top:14px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button></form></div>
+{person_rates}
 <div class="be-card"><h2>{esc(t('be_thresholds',lang))}</h2>
 <form method="post" action="/app/beheer"><input type="hidden" name="form" value="thresholds">
 <div class="be-row">amber ≥ <input name="amber" type="number" value="{th['amber']}" style="width:80px"> %

@@ -67,7 +67,7 @@ def project_groups(pid):
 
 def project_time_entries(pid):
     return tl_all("timeTracking.list",
-                  {"filter": {"relates_to": {"type": "nextgenProject", "id": pid}}}, size=20)
+                  {"filter": {"relates_to": {"type": "nextgenProject", "id": pid}}}, size=100)
 
 
 def quotation_info(qid):
@@ -100,6 +100,20 @@ def cf_value(custom_fields, cf_id):
 
 def amount(money):
     return float((money or {}).get("amount") or 0) if isinstance(money, dict) else 0.0
+
+
+def amount_or_none(money):
+    """Money -> float, or None when the field itself is null/absent.
+
+    Unlike amount(), this distinguishes a REAL €0 from a null caused by the
+    Teamleader permission 'Costs on projects' being off for the OAuth user
+    (cost/amount_billed/margin come back null then)."""
+    if isinstance(money, dict) and money.get("amount") is not None:
+        try:
+            return float(money["amount"])
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def hours(timeobj):
