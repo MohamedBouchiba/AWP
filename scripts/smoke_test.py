@@ -597,8 +597,20 @@ r = client.get("/app/project/fx-new")
 body = r.get_data(as_text=True)
 assert body.count("Automatisch = afgerond zodra") == 1, "texte de la regle en double"
 assert 'class="pinfo"' in body, "pas de bulle d'info dans la fiche"
-assert "0.0 / —" not in body and " / —" not in body, "le slash sans valeur est toujours la"
-print("OK   bulles d'info en place, plus de slash orphelin")
+print("OK   bulles d'info en place")
+
+# Le slash orphelin : il faut une fase SANS budget d'heures pour l'exercer.
+# fx-zero a exactement ca (budget_hours=0) -- la fixture precedente avait un
+# budget partout, ce qui laissait passer la ligne par fase et la barre du tableau.
+for page in ("/app", "/app/project/fx-zero", "/app/project/fx-old"):
+    b = client.get(page).get_data(as_text=True)
+    assert " / —" not in b and "/—" not in b, f"slash sans valeur encore present sur {page}"
+b = client.get("/app/project/fx-zero").get_data(as_text=True)
+assert "5.0u" in b, "les heures prestees ont disparu avec le slash"
+# L'infobulle des pastilles ne doit plus coller un % en euros a des heures.
+assert "% van het budget" in client.get("/app").get_data(as_text=True), \
+    "l'infobulle des pastilles ne precise pas que le % porte sur le budget"
+print("OK   plus de slash orphelin (apercu, fiches) et infobulle des pastilles corrigee")
 
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 

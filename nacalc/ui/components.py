@@ -21,6 +21,16 @@ def hb(n):
     return "—" if not n else h1(n)
 
 
+def uren_txt(tracked, budget):
+    """'12.0 / 20.0u', or just '12.0u' when there is no time budget.
+
+    Teamleader has no time budget on many phases, and "12.0 / —u" reads as a
+    broken number rather than as missing information. Drop the comparison
+    entirely when there is nothing to compare against.
+    """
+    return f"{h1(tracked)} / {h1(budget)}u" if budget else f"{h1(tracked)}u"
+
+
 # ---------- the single margin gate ----------
 # Margin = invoiced - effective cost. It is meaningless (and misleading) when
 # nothing is invoiced yet: a pre-migration snapshot still carries the OLD margin
@@ -83,11 +93,17 @@ def _dot(p):
         cls = {"green": "c-good", "amber": "c-warn", "red": "c-over", "darkred": "c-crit"}.get(p["color"], "c-good")
     state = {"done": "st-done", "progress": "st-progress"}.get(p["glyph"], "")
     if p["applicable"] and p["started"]:
-        title = f'{p["naam"]}: {p["tracked_hours"]}/{p["budget_hours"]}u ({p["pct"]}%)'
+        # The percentage is a BUDGET ratio in euros, not an hours ratio. Putting
+        # it in brackets right after the hours read as "133.9% of those hours",
+        # which is wrong and was one source of the client's confusion.
+        title = (f'{p["naam"]} — {uren_txt(p["tracked_hours"], p["budget_hours"])}'
+                 f' · {p["pct"]}% van het budget')
+        if p.get("overhead"):
+            title += " · overhead, telt niet mee in de status"
     elif not p["applicable"]:
-        title = f'{p["naam"]}: niet inbegrepen'
+        title = f'{p["naam"]} — niet inbegrepen in de offerte'
     else:
-        title = f'{p["naam"]}: 0/{p["budget_hours"]}u'
+        title = f'{p["naam"]} — nog niet gestart'
     return f'<span class="pdot {cls} {state}" title="{esc(title)}"></span>'
 
 def dots(phases):

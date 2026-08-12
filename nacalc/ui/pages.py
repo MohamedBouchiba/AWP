@@ -6,9 +6,9 @@ import os
 from html import escape as esc
 
 from ..i18n import t
-from .components import (eur, h1, hb, dots, bar_color, _uren_ratio_color,
+from .components import (eur, h1, dots, bar_color, _uren_ratio_color,
                         _status_cell, _abar, visible_marge, visible_marge_pct,
-                        invoiced_total)
+                        invoiced_total, uren_txt as _uren_txt)
 
 _CSS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -203,7 +203,7 @@ def render_overzicht(lang, snaps, kpis, cats, cons, syncing=False, show_rates_ba
             f'<td class="num">{eur(s["budget_klant"])}</td>'
             f'<td class="num">{eur(s["offerte_awp"])}</td>'
             f'<td title="{esc(t("uren_gestart_tip",lang))}"><div class="bar"><i style="width:{min(r*100,100):.0f}%;background:{_uren_ratio_color(r)}"></i></div>'
-            f'<div class="barlab">{h1(gepr)} / {hb(begroot)}u · {(f"{r*100:.0f}%" if begroot else "—")}</div></td>'
+            f'<div class="barlab">{_uren_txt(gepr, begroot)}{(f" · {r*100:.0f}%" if begroot else "")}</div></td>'
             f'<td>{dots(phases)}</td>'
             f'<td class="num">{marge_chip}</td></tr>')
     body = "".join(rows) or (f'<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px">{esc(t("no_projects",lang))}</td></tr>')
@@ -304,7 +304,7 @@ def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
             f'<span class="tag" style="color:{bar_color(p["color"])}">{esc(lab)}</span></div>'
             f'<div class="fbar"><i style="width:{min(r*100,100):.0f}%;background:{bar_color(p["color"])}"></i></div>'
             f'<div class="fr-meta"><span>{eur(p.get("verbruikt_eur", p["spent_eur"]))} / {eur(p["budget_eur"])} {esc(t("ph_verbruikt",lang))}</span><span>{p["pct"] if p["pct"] is not None else 0}%</span></div>'
-            f'<div class="fr-meta"><span>{h1(p.get("tracked_hours"))} / {hb(p.get("budget_hours"))}u {esc(t("ph_uren_lab",lang))}</span></div></div>')
+            f'<div class="fr-meta"><span>{_uren_txt(p.get("tracked_hours"), p.get("budget_hours"))} {esc(t("ph_uren_lab",lang))}</span></div></div>')
     # Say which two numbers the per-phase % actually compares -- the client's
     # confusion on A346 was exactly about this.
     basis_note = t("ph_basis_spent" if (phases and phases[0].get("basis") == "spent")
