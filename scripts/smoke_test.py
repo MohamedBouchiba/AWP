@@ -6,6 +6,7 @@ and hits every page — including the drawer and the analyse filters — asserti
 200s with CSS present. Run after any change: `python scripts/smoke_test.py`.
 """
 import os
+import re
 import sys
 import json
 import shutil
@@ -241,13 +242,23 @@ check("/app/beheer", 200, login=True, contains='name="form" value="phases"')
 r = check("/app/beheer", 200, login=True, contains="Voorstellen op basis van Teamleader")
 assert "nazorgdossier" in r.get_data(as_text=True), "la fusion inedite n'est pas proposee"
 
-# Saving the form must persist exactly what was ticked/typed.
-post("/app/beheer", {"form": "phases", "overhead": ["administratie"],
+# Saving the form must persist exactly what was ticked/typed. The checkbox reads
+# "counts towards the status", so overhead is everything SHOWN but not ticked.
+post("/app/beheer", {"form": "phases",
+                     "shown": "administratie,schetsontwerp,voorontwerp",
+                     "meetellen": ["schetsontwerp", "voorontwerp"],
                      "aliases": ("schetsontwerp/haalbaarheid = schetsontwerp\n"
                                  "7. Nazorgdossier = 6. Nazorg\n\nbad line\n"),
                      "order": "1. ADMINISTRATIE\n3. VOORONTWERP\n"})
 _tx = store.get_config("phase_taxonomy")
 assert _tx["overhead"] == ["administratie"], f"overhead not saved: {_tx}"
+# A phase the form never listed must keep its setting, not be silently reset.
+store.set_config("phase_taxonomy", dict(_tx, overhead=["administratie", "nazorg"]))
+post("/app/beheer", {"form": "phases", "shown": "administratie",
+                     "meetellen": [], "aliases": "", "order": ""})
+assert set(store.get_config("phase_taxonomy")["overhead"]) == {"administratie", "nazorg"}, \
+    "une fase absente du formulaire a perdu son reglage"
+store.set_config("phase_taxonomy", _tx)
 assert _tx["aliases"] == {"schetsontwerp/haalbaarheid": "schetsontwerp",
                           "nazorgdossier": "nazorg"}, \
     f"aliases not saved/normalised: {_tx}"
@@ -515,6 +526,79 @@ assert sync_mod.send_digests() == 0, "envoi tente sans configuration SMTP"
 check("/app/beheer", 200, login=True, contains="Niet geconfigureerd")
 check("/app/beheer", 200, login=True, contains='name="form" value="mail"')
 print("OK   sans SMTP : fonctionnalite inerte et signalee en Beheer")
+
+# --- l'exclusion doit agir IMMEDIATEMENT, sans attendre une sync -----------
+# C'est le defaut signale : l'indicateur overhead etait fige dans le cache, donc
+# cocher la case ne changeait rien avant la sync suivante (jusqu'a 20 min).
+OH_ONLY = calc_mod.build_phases([
+    {"name": "1. ADMINISTRATIE", "budget_eur": 249.90, "spent_eur": 945.0, "cost_eur": 945.0,
+     "tracked_hours": 11.0, "budget_hours": 3.0},
+    {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 900.0, "cost_eur": 900.0,
+     "tracked_hours": 12.0, "budget_hours": 100.0},
+], cfg_mod.DEFAULT_THRESHOLDS, {"aliases": {}, "order": [], "overhead": [], "labels": {}})
+store.upsert_snapshot({
+    "project_id": "fx-oh", "project_key": "A900", "titel": "A900 - Overhead", "naam": "Overhead",
+    "adres": "", "status": "open", "is_architectuur": 1, "categorie": "", "contracttype": "",
+    "verantw_arch": "WB", "verantw_medewerker": "", "budget_klant": None, "offerte_awp": None,
+    "raming_vo": None, "uren_begroot": 103.0, "uren_gepresteerd": 23.0,
+    "uren_begroot_gestart": 103.0, "uren_gepresteerd_gestart": 23.0,
+    "effectieve_kost": 1845.0, "gefactureerd": None, "project_type": "", "activity_json": None,
+    "marge": None, "marge_pct": None, "summary_status": "over", "n_over": 1, "n_warn": 0,
+    "cost_estimated": 0, "kost_bron": "teamleader", "werfbezoeken": 0, "besprekingen": 0,
+    "attention_note": "", "phases_json": json.dumps(OH_ONLY),
+    "synced_at": "2026-08-12T00:00:00Z"})
+# Le snapshot est ecrit avec overhead=[] -> administratie compte -> 'over'.
+assert store.get_snapshot("fx-oh")["summary_status"] == "over"
+
+def _status_of(pid, key):
+    r = client.get("/app")
+    m = re.search(r'<tr class="row-(\w*)"[^>]*data-nr="' + key + r'"', r.get_data(as_text=True))
+    return (m.group(1) or "none") if m else "ABSENT"
+
+with client.session_transaction() as s:
+    s["uid"] = uid
+# 1) administratie comptee -> le dossier est 'over'
+post("/app/beheer", {"form": "phases", "shown": "administratie,voorontwerp",
+                     "meetellen": ["administratie", "voorontwerp"], "aliases": "", "order": ""})
+assert _status_of("fx-oh", "A900") == "over", "administratie cochee devrait peser sur le statut"
+r = client.get("/app/project/fx-oh")
+assert "Over budget" in r.get_data(as_text=True), "le drawer ne suit pas le reglage"
+
+# 2) on la decoche -> effet IMMEDIAT, sans aucune sync
+post("/app/beheer", {"form": "phases", "shown": "administratie,voorontwerp",
+                     "meetellen": ["voorontwerp"], "aliases": "", "order": ""})
+assert _status_of("fx-oh", "A900") == "ok", \
+    "decocher administratie n'a eu aucun effet immediat sur l'apercu"
+r = client.get("/app/project/fx-oh")
+body = r.get_data(as_text=True)
+assert "Over budget" not in body, "le drawer affiche encore 'Over budget'"
+# ... et l'infobulle des uren doit nommer la fase overhead
+assert "budgetstatus" in body, "l'infobulle n'explique pas le sort de la fase overhead"
+# Le cache lui-meme n'a PAS ete reecrit : c'est bien un recalcul a la lecture.
+assert store.get_snapshot("fx-oh")["summary_status"] == "over"
+print("OK   cocher/decocher une fase change le dossier immediatement")
+
+# 3) on la recoche -> retour a 'over'
+post("/app/beheer", {"form": "phases", "shown": "administratie,voorontwerp",
+                     "meetellen": ["administratie", "voorontwerp"], "aliases": "", "order": ""})
+assert _status_of("fx-oh", "A900") == "over", "le reglage n'est pas reversible"
+print("OK   reversible dans les deux sens")
+
+# L'interface de reglage doit etre le tableau, avec l'impact chiffre.
+r = check("/app/beheer", 200, login=True, contains='name="meetellen"')
+be = r.get_data(as_text=True)
+assert 'class="ph-tab"' in be, "la carte Fasen n'utilise pas le tableau"
+assert 'name="shown"' in be, "le formulaire ne dit pas quelles fases il a listees"
+assert "Nu boven drempel" in be, "la colonne d'impact est absente"
+print("OK   reglage des fases : tableau + colonne d'impact")
+
+# La bulle d'info a remplace le long texte bleu dans la fiche.
+r = client.get("/app/project/fx-new")
+body = r.get_data(as_text=True)
+assert body.count("Automatisch = afgerond zodra") == 1, "texte de la regle en double"
+assert 'class="pinfo"' in body, "pas de bulle d'info dans la fiche"
+assert "0.0 / —" not in body and " / —" not in body, "le slash sans valeur est toujours la"
+print("OK   bulles d'info en place, plus de slash orphelin")
 
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 

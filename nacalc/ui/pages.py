@@ -331,8 +331,26 @@ def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
     bg, gp = s.get("uren_begroot_gestart"), s.get("uren_gepresteerd_gestart")
     if bg is None or gp is None:
         bg, gp = s["uren_begroot"], s["uren_gepresteerd"]
-    uren_sub = (f'<div class="mc-sub">{esc(t("dr_uren_totaal",lang).format(n=h1(s["uren_begroot"])))}</div>'
-                if s.get("uren_begroot") else "")
+    # Which phases feed that hours figure, and which don't. A bare "129.3 / —"
+    # said nothing; the count and the reasons belong in a tooltip, not in the
+    # value line.
+    _inc = [p for p in phases if p.get("started") and p.get("applicable")]
+    _exc = [(p, t("ph_reason_nobudget" if not p.get("applicable") else "ph_reason_notstarted", lang))
+            for p in phases if not (p.get("started") and p.get("applicable"))]
+    _tip = [t("dr_uren_tip_head", lang).format(n=len(_inc), m=len(_exc))]
+    if _exc:
+        _tip.append(t("dr_uren_tip_out", lang).format(
+            lijst=", ".join(f'{p["naam"]} ({r})' for p, r in _exc)))
+    for p in _inc:
+        # Named explicitly: it is counted here but deliberately ignored by the
+        # budget status, which is exactly the distinction people trip over.
+        if p.get("overhead"):
+            _tip.append(t("dr_uren_tip_overhead", lang).format(naam=p["naam"]))
+    if s.get("uren_begroot"):
+        _tip.append(t("dr_uren_tip_total", lang).format(n=h1(s["uren_begroot"])))
+    uren_info = f'<span class="pinfo" title="{esc(" ".join(_tip))}">i</span>'
+    uren_sub = (f'<div class="mc-sub">{esc(t("dr_uren_sub",lang).format(n=h1(bg)))}</div>'
+                if bg else f'<div class="mc-sub">{esc(t("dr_uren_sub_none",lang))}</div>')
     # Invoices sent outside Teamleader: admin-only, and it posts as a normal form
     # (the drawer is injected HTML, so any <script> in here would never run).
     gef_extra = ""
@@ -362,10 +380,11 @@ def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
             f'<form class="mc-inline" method="post" action="/app/project/{esc(s["project_id"])}/afgerond">'
             f'<select name="afgerond" onchange="this.form.submit()">'
             f'{_o(None, "dr_afgerond_auto")}{_o(1, "dr_afgerond_ja")}{_o(0, "dr_afgerond_nee")}'
-            f'</select></form>'
-            f'<div class="mc-sub">{esc(t("dr_afgerond_hint",lang).format(n=afgerond_maanden))}</div>')
+            f'</select></form>')
     else:
         af_html = ""
+    # The rule was three lines of blue text in the cell; it belongs in a bubble.
+    af_info = f'<span class="pinfo" title="{esc(t("dr_afgerond_hint",lang).format(n=afgerond_maanden))}">i</span>'
     return f"""<div class="dr-head"><button class="x" onclick="closeDrawer()">×</button>
 <h2>{esc(s["project_key"] or "")} · {esc(s["naam"] or "")}</h2>
 <div class="m">{esc(s["adres"] or "")} &nbsp;•&nbsp; {esc(s["verantw_arch"] or "")}</div>
@@ -376,10 +395,10 @@ def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
 <div class="mc"><div class="l">{esc(t('dr_raming',lang))}</div><div class="v">{eur(s["raming_vo"])}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_offerte',lang))}</div><div class="v">{eur(s["offerte_awp"])}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_gefactureerd',lang))}</div><div class="v">{eur(invoiced_total(s) or None)}</div>{gef_extra}</div>
-<div class="mc"><div class="l">{esc(t('dr_uren_gestart',lang))}</div><div class="v">{h1(gp)} / {hb(bg)}</div>{uren_sub}</div>
+<div class="mc"><div class="l">{esc(t('dr_uren_gestart',lang))}{uren_info}</div><div class="v">{h1(gp)}u</div>{uren_sub}</div>
 <div class="mc"><div class="l">{esc(t('dr_werfbezoek',lang))}</div><div class="v">{s["werfbezoeken"] or 0}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_bespreking',lang))}</div><div class="v">{s["besprekingen"] or 0}</div></div>
-<div class="mc"><div class="l">{esc(t('dr_afgerond',lang))}</div><div class="v">{esc(af_lab)}</div>{af_html}</div>
+<div class="mc"><div class="l">{esc(t('dr_afgerond',lang))}{af_info}</div><div class="v">{esc(af_lab)}</div>{af_html}</div>
 <div class="mc"><div class="l">{esc(t('dr_kost',lang))}</div><div class="v">{kost_html}{est}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_marge',lang))}</div><div class="v" style="color:{marge_col}">{marge_html}</div></div>
 </div>
@@ -603,14 +622,36 @@ def _phase_card(lang, taxonomy, seen_keys, suggestions):
     seen (the checkbox list can't show those).
     """
     tx = taxonomy or {}
-    overhead = set(tx.get("overhead") or [])
+    seen_keys = seen_keys or []
     if seen_keys:
-        boxes = "".join(
-            f'<label class="be-ph-opt"><input type="checkbox" name="overhead" value="{esc(k)}"'
-            f'{" checked" if k in overhead else ""}> {esc(lbl)}</label>'
-            for k, lbl in seen_keys)
+        # One row per phase, with what the setting is worth: how many projects
+        # contain it, and in how many it currently sits at/over the threshold —
+        # i.e. how many would actually change if you exclude it.
+        tag = f'<span class="ph-tag">{esc(t("be_ph_tag", lang))}</span>'
+        tip = esc(t("be_ph_count_tip", lang))
+        rows_html = []
+        for d in seen_keys:
+            over = f'<b>{d["n_over"]}</b>' if d["n_over"] else "—"
+            rows_html.append(
+                f'<tr class="{"is-oh" if d["overhead"] else ""}">'
+                f'<td class="ph-n">{esc(d["label"])}{tag if d["overhead"] else ""}</td>'
+                f'<td class="num">{d["n"]}</td>'
+                f'<td class="num">{over}</td>'
+                f'<td class="ph-sw"><label class="sw" title="{tip}">'
+                f'<input type="checkbox" name="meetellen" value="{esc(d["key"])}"'
+                f'{"" if d["overhead"] else " checked"}><span></span></label></td></tr>')
+        body = "".join(rows_html)
+        table = (f'<div class="tablewrap ph-wrap"><table class="ph-tab"><thead><tr>'
+                 f'<th>{esc(t("be_ph_col_fase",lang))}</th>'
+                 f'<th class="num">{esc(t("be_ph_col_n",lang))}</th>'
+                 f'<th class="num">{esc(t("be_ph_col_over",lang))}</th>'
+                 f'<th>{esc(t("be_ph_col_count",lang))}</th>'
+                 f'</tr></thead><tbody>{body}</tbody></table></div>'
+                 # Which keys this form showed, so unticking one can be told
+                 # apart from a phase the form never listed.
+                 f'<input type="hidden" name="shown" value="{esc(",".join(d["key"] for d in seen_keys))}">')
     else:
-        boxes = f'<p class="panel-s">{esc(t("be_ph_none_seen",lang))}</p>'
+        table = f'<p class="panel-s">{esc(t("be_ph_none_seen",lang))}</p>'
     alias_txt = "\n".join(f"{a} = {b}" for a, b in sorted((tx.get("aliases") or {}).items()))
     order_txt = "\n".join(tx.get("order") or [])
     sug = ""
@@ -623,13 +664,15 @@ def _phase_card(lang, taxonomy, seen_keys, suggestions):
 <form method="post" action="/app/beheer"><input type="hidden" name="form" value="phases">
 <div class="be-ph-lab">{esc(t('be_ph_overhead',lang))}</div>
 <div class="be-ph-hint">{esc(t('be_ph_overhead_hint',lang))}</div>
-<div class="be-ph-list">{boxes}</div>
+{table}
+<details class="be-adv"><summary>{esc(t('be_ph_advanced',lang))}</summary>
 <div class="be-ph-lab">{esc(t('be_ph_aliases',lang))}</div>
 <div class="be-ph-hint">{esc(t('be_ph_aliases_hint',lang))}</div>
 <textarea name="aliases" rows="4" class="be-ph-ta">{esc(alias_txt)}</textarea>
 <div class="be-ph-lab">{esc(t('be_ph_order',lang))}</div>
 <textarea name="order" rows="6" class="be-ph-ta">{esc(order_txt)}</textarea>
-<button class="btn" style="margin-top:12px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button>
+</details>
+<button class="btn" style="margin-top:14px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button>
 </form>
 <form method="post" action="/app/beheer" style="margin-top:10px"><input type="hidden" name="form" value="phases_optimize">
 <button class="btn" type="submit">✨ {esc(t('be_ph_optimize',lang))}</button>

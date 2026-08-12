@@ -72,7 +72,7 @@ def set_lang(code):
 @auth.login_required
 def overzicht():
     lang = get_lang()
-    all_snaps = store.list_snapshots(architectuur_only=True)
+    all_snaps = _apply_taxonomy(store.list_snapshots(architectuur_only=True))
     # Server-side selection (period + owner), so the KPI cards follow it. The
     # search/categorie/contract/status controls stay client-side as before.
     period, d_from, d_to, _ = _filter_args()
@@ -112,6 +112,7 @@ def project_detail(pid):
     s = store.get_snapshot(pid)
     if not s:
         return "", 404
+    _apply_taxonomy([s])   # overhead follows the current Beheer setting
     u = auth.current_user()
     # Names come from the cached tl_users config (written by the sync thread) --
     # pages never call the Teamleader API.
@@ -217,6 +218,40 @@ def _months_range(a, b):
 
 def _taxonomy():
     return store.get_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY)
+
+
+def _apply_taxonomy(snaps, tx=None):
+    """Re-derive the overhead flag and the project status from the CURRENT rules.
+
+    The taxonomy is an interpretation rule, not source data, so baking it into
+    the cached snapshot was a mistake: ticking "overhead" in Beheer only took
+    effect after the next full sync — up to twenty minutes on 187 projects, and
+    longer if a sync was already running. From the screen it simply looked
+    broken.
+
+    Recomputing on read makes the setting immediate everywhere, and costs a few
+    thousand dict operations per page. The stored value stays as the sync left
+    it; it is only ever a fallback.
+    """
+    tx = tx if tx is not None else _taxonomy()
+    for s in snaps:
+        ph = json.loads(s.get("phases_json") or "[]")
+        if not ph:
+            continue
+        changed = False
+        for p in ph:
+            oh = phases_mod.canonical(p.get("naam"), tx)["overhead"]
+            if oh != p.get("overhead"):
+                p["overhead"] = oh
+                changed = True
+        if not changed:
+            continue
+        summ = calc.project_summary(ph)
+        s["summary_status"] = summ["status"]
+        s["n_over"] = summ["n_over"]
+        s["n_warn"] = summ["n_warn"]
+        s["phases_json"] = json.dumps(ph)
+    return snaps
 
 
 def is_afgerond(s, now_ym=None, months_idle=None):
@@ -399,7 +434,7 @@ def _phase_rows(agg):
 def analyse2():
     """Geofferteerd vs kostprijs bureau — no invoicing anywhere on this page."""
     lang = get_lang()
-    snaps = store.list_snapshots(architectuur_only=True)
+    snaps = _apply_taxonomy(store.list_snapshots(architectuur_only=True))
     period, d_from, d_to, pids = _filter_args()
     dossier = _dossier_arg()
     sel = _select_dossier(_select_snapshots(snaps, period, d_from, d_to, pids), dossier)
@@ -437,7 +472,7 @@ def analyse2_export():
 @auth.login_required
 def analyse():
     lang = get_lang()
-    snaps = store.list_snapshots(architectuur_only=True)
+    snaps = _apply_taxonomy(store.list_snapshots(architectuur_only=True))
     period, d_from, d_to, pids = _filter_args()
     dossier = _dossier_arg()
     sel = _select_dossier(_select_snapshots(snaps, period, d_from, d_to, pids), dossier)
@@ -489,7 +524,7 @@ def _export_xlsx(quote_basis=False):
     from openpyxl import Workbook
     from flask import send_file
 
-    snaps = store.list_snapshots(architectuur_only=True)
+    snaps = _apply_taxonomy(store.list_snapshots(architectuur_only=True))
     sel = _select_dossier(_select_snapshots(snaps, *_filter_args()), _dossier_arg())
     tx = _taxonomy()
     now_ym = time.strftime("%Y-%m", time.gmtime())
@@ -644,7 +679,14 @@ def beheer():
             tx["aliases"] = {a: b for a, b in aliases.items() if b not in aliases}
             tx["order"] = [k for k in (phases_mod.normalize(x)
                                        for x in (request.form.get("order") or "").splitlines()) if k]
-            tx["overhead"] = [k for k in request.form.getlist("overhead") if k]
+            # The checkbox reads "counts towards the budget status", which is the
+            # natural way round; overhead is its complement. Only the phases the
+            # form actually listed are recomputed, so a phase that has not been
+            # seen in a while keeps its setting instead of being silently reset.
+            shown = [k for k in (request.form.get("shown") or "").split(",") if k]
+            counts = set(request.form.getlist("meetellen"))
+            keep = [k for k in (tx.get("overhead") or []) if k not in shown]
+            tx["overhead"] = sorted(set(keep) | {k for k in shown if k not in counts})
             store.set_config("phase_taxonomy", tx)
             sync.trigger_sync()   # overhead changes summary_status -> recompute
         elif form == "phases_optimize":
@@ -671,12 +713,25 @@ def beheer():
     external_rate = store.get_config("external_rate", config.DEFAULT_EXTERNAL_RATE)
     tx = _taxonomy()
     seen_names = store.get_config("seen_phase_names", [])
-    # One entry per CANONICAL phase (aliases already collapsed), in quote order.
-    seen = {}
-    for n in seen_names:
-        c = phases_mod.canonical(n, tx)
-        seen.setdefault(c["key"], (c["order"], c["label"]))
-    seen_keys = [(k, lbl) for k, (_o, lbl) in sorted(seen.items(), key=lambda kv: kv[1])]
+    # One row per CANONICAL phase, built from the real snapshots rather than the
+    # name list, so the admin sees how much each setting actually weighs:
+    #   n       = in how many projects the phase occurs
+    #   n_over  = in how many it is currently at/over the threshold, i.e. how
+    #             many projects marking it as overhead would actually change
+    rows = {}
+    for s in store.list_snapshots(architectuur_only=False):
+        for p in json.loads(s.get("phases_json") or "[]"):
+            c = phases_mod.canonical(p.get("naam"), tx)
+            d = rows.setdefault(c["key"], {"key": c["key"], "label": c["label"],
+                                           "order": c["order"], "n": 0, "n_over": 0})
+            d["n"] += 1
+            if (p.get("started") and p.get("applicable")
+                    and p.get("color") in ("amber", "red", "darkred")):
+                d["n_over"] += 1
+    overhead = set(tx.get("overhead") or [])
+    for d in rows.values():
+        d["overhead"] = d["key"] in overhead
+    seen_keys = sorted(rows.values(), key=lambda d: (d["order"], d["label"]))
     content = pages.render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
                                   has_tl_costs=store.get_config("has_project_costs", None),
                                   tl_users=store.get_config("tl_users", []),
