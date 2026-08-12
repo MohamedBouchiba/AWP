@@ -250,8 +250,9 @@ close("A346 marge 'offerte - kost' = +25932.24 (= le champ margin de Teamleader)
 # --------------------------------------------------------------------------
 # 5c. Le statut suit les HEURES (regle Michiel, 2026-08-12)
 # --------------------------------------------------------------------------
-print("\n--- statut sur les heures : le cas de Michiel ---")
-# "if a project is over budget in phase 1, you show the over budget label"
+print("\n--- statut sur les heures : la regle de Michiel ---")
+# "you look at the current phase OR if the total is over budget"
+# et, explicitement : une fase terminee en depassement ne maintient PAS l'alerte.
 MICHIEL = [
     {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 5000.0, "cost_eur": 5000.0,
      "tracked_hours": 132.0, "budget_hours": 100.0},     # fase terminee a 132%
@@ -262,12 +263,27 @@ mp = calc.build_phases(MICHIEL, TH, phases.DEFAULT_TAXONOMY)
 ms = calc.project_summary(mp, TH)
 eq("fase 3 : 132 % des heures", {p["naam"]: p["uren_pct"] for p in mp}["3. VOORONTWERP"], 132.0)
 eq("fase 4 : 10 % des heures", {p["naam"]: p["uren_pct"] for p in mp}["4. BOUWAANVRAAG"], 10.0)
-# cumul = 142 / 200 = 71 % -> vert. Mais la fase 3 terminee a 132 % conserve l'alerte.
 eq("cumul des deux fases = 71 %",
    round((132.0 + 10.0) / (100.0 + 100.0) * 100, 1), 71.0)
-eq("le dossier reste 'over budget'", ms["status"], "over")
+# "should not stay flagged" : la fase suivante a demarre, le total est bon.
+eq("le dossier redevient 'op koers'", ms["status"], "ok")
 eq("statut base sur les heures", ms["basis"], "uren")
-eq("pourcentage retenu = celui de la fase terminee", ms["uren_pct"], 132.0)
+eq("pourcentage retenu = le cumul (71 %)", ms["uren_pct"], 71.0)
+# Le depassement reste visible sur la fase elle-meme, il n'est pas efface.
+eq("la fase terminee reste rouge", {p["naam"]: p["uren_color"] for p in mp}["3. VOORONTWERP"],
+   "darkred")
+
+print("\n--- tant que la fase en depassement est EN COURS, le dossier est flagge ---")
+ACTIEF = [
+    {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 500.0, "cost_eur": 500.0,
+     "tracked_hours": 10.0, "budget_hours": 100.0},      # terminee, 10 %
+    {"name": "4. BOUWAANVRAAG", "budget_eur": 10000.0, "spent_eur": 500.0, "cost_eur": 500.0,
+     "tracked_hours": 150.0, "budget_hours": 100.0},     # active, 150 %
+]
+asum = calc.project_summary(calc.build_phases(ACTIEF, TH, phases.DEFAULT_TAXONOMY), TH)
+# cumul = 160/200 = 80 % (orange), mais la fase EN COURS est a 150 % -> rouge.
+eq("la fase en cours a 150 % fait basculer le dossier", asum["status"], "over")
+eq("pourcentage retenu = celui de la fase en cours", asum["uren_pct"], 150.0)
 
 print("\n--- le cumul seul fait aussi basculer ---")
 CUMUL = [
@@ -278,7 +294,7 @@ CUMUL = [
 ]
 cs = calc.project_summary(calc.build_phases(CUMUL, TH, phases.DEFAULT_TAXONOMY), TH)
 eq("cumul 185/200 = 92.5 % -> dreigt over", cs["status"], "warn")
-eq("pourcentage retenu = 95 % (la pire fase terminee)", cs["uren_pct"], 95.0)
+eq("pourcentage retenu = le cumul, pire que la fase en cours (90 %)", cs["uren_pct"], 92.5)
 
 print("\n--- sous les seuils : le dossier est 'op koers' ---")
 OK_H = [
@@ -305,7 +321,8 @@ a346 = calc.build_phases(A346, TH, phases.DEFAULT_TAXONOMY)
 a_s = calc.project_summary(a346, TH)
 # cumul = 667.2 / 658.7 = 101.3 % ; pire fase terminee = UITVOERINGSDOSSIER 246.9 %
 eq("A346 reste 'over budget'", a_s["status"], "over")
-close("pourcentage retenu = 246.9 % (UITVOERINGSDOSSIER)", a_s["uren_pct"], 246.9, tol=0.2)
+# La fase en cours (BOUWCOORDINATIE) est a 5 % ; c'est le cumul qui fait basculer.
+close("pourcentage retenu = le cumul, 101.3 %", a_s["uren_pct"], 101.3, tol=0.2)
 eq("2 fases au-dessus des heures budgetees", a_s["n_over"], 2)
 eq("0 fase en 'dreigt over'", a_s["n_warn"], 0)
 
@@ -451,11 +468,12 @@ eq("heures inchangees : l'overhead reste compte", tot_tx, tot)
 
 print("\n--- le cas que le client decrit : administratie seule fait basculer ---")
 ADMIN_ONLY = [
-    # 249.90 EUR de budget : quelques heures pointees font exploser le %.
+    # 3 h budgetees : quelques heures pointees font exploser le %. C'est la seule
+    # fase demarree, donc aussi la fase EN COURS -> elle pilote le statut.
     {"name": "1. ADMINISTRATIE", "budget_eur": 249.90, "spent_eur": 700.00,
-     "cost_eur": 700.00, "tracked_hours": 8.0, "budget_hours": 3.0},
-    {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 2000.0,
-     "cost_eur": 2000.0, "tracked_hours": 20.0, "budget_hours": 100.0},
+     "cost_eur": 700.00, "tracked_hours": 11.0, "budget_hours": 3.0},
+    {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 0.0,
+     "cost_eur": None, "tracked_hours": 0.0, "budget_hours": 100.0},
 ]
 NO_TX = {"aliases": {}, "order": [], "overhead": [], "labels": {}}
 eq("AVANT (taxonomie desactivee) : le projet est 'over' a cause de l'administratie",

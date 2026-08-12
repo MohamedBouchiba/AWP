@@ -29,7 +29,9 @@ DEFAULT_SYNC_INTERVAL_MINUTES = int(os.environ.get("SYNC_INTERVAL_MINUTES", "60"
 #    verbruikt_eur/basis/kost_bron, snapshots carry the started-phase hours.
 # 6: the project badge is driven by HOURS (Michiel, 2026-08-12); phases
 #    carry uren_pct / uren_color.
-CURRENT_DATA_VERSION = 6
+# 7: the badge is the worst of (current phase, cumulative), not of
+#    (cumulative, worst finished phase) -- Michiel corrected the rule.
+CURRENT_DATA_VERSION = 7
 
 # Which numbers the per-phase percentage compares. "cost" = kostprijs bureau vs
 # geofferteerd budget (what AWP asked for); "spent" = Teamleader's

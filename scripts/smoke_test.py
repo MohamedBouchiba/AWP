@@ -660,11 +660,13 @@ print("OK   la pastille signale une sync en retard")
 
 # --- le statut suit les HEURES (regle Michiel) -----------------------------
 # Euros confortables, heures en depassement -> le badge doit dire "over budget".
+# La fase EN COURS depasse ses heures -> le dossier bascule, meme si les euros
+# sont a 10 %. (Regle Michiel : "the current phase OR the total".)
 UREN = calc_mod.build_phases([
     {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 1000.0, "cost_eur": 1000.0,
-     "tracked_hours": 132.0, "budget_hours": 100.0},
-    {"name": "4. BOUWAANVRAAG", "budget_eur": 10000.0, "spent_eur": 500.0, "cost_eur": 500.0,
      "tracked_hours": 10.0, "budget_hours": 100.0},
+    {"name": "4. BOUWAANVRAAG", "budget_eur": 10000.0, "spent_eur": 500.0, "cost_eur": 500.0,
+     "tracked_hours": 150.0, "budget_hours": 100.0},
 ], cfg_mod.DEFAULT_THRESHOLDS, phases_mod.DEFAULT_TAXONOMY)
 _su = calc_mod.project_summary(UREN, cfg_mod.DEFAULT_THRESHOLDS)
 store.upsert_snapshot(dict(store.get_snapshot("fx-new"), project_id="fx-uren",
@@ -694,9 +696,9 @@ store.set_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY)
 sync_mod._make_meldingen({"project_id": "fx-uren", "project_key": "A902", "naam": "Uren",
                           "verantw_arch": "WB", "phases_json": json.dumps(UREN)})
 _ml = [m for m in store.list_meldingen() if m["project_id"] == "fx-uren"]
-assert len(_ml) == 1 and _ml[0]["phase_naam"] == "3. VOORONTWERP", \
+assert len(_ml) == 1 and _ml[0]["phase_naam"] == "4. BOUWAANVRAAG", \
     f"les meldingen ne suivent pas les heures : {[(m['phase_naam'], m['severity']) for m in _ml]}"
-assert _ml[0]["pct"] == 132.0, f"la melding montre un % qui n'est pas celui des heures : {_ml[0]['pct']}"
+assert _ml[0]["pct"] == 150.0, f"la melding montre un % qui n'est pas celui des heures : {_ml[0]['pct']}"
 print("OK   les meldingen suivent les heures, comme le badge")
 
 # Seuils : le libelle doit dire qu'il s'agit des heures.

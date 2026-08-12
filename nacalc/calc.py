@@ -190,10 +190,14 @@ def project_summary(phases, thresholds=None):
     Client rule (Michiel, 2026-08-12): the project label follows the hours, not
     the euros. Two measures, and the worst one wins:
 
-      cumul  Σ tracked / Σ budgeted over the started, budgeted, non-overhead
-             phases — "previous + active phases" taken together;
-      fini   the worst hours ratio among the phases already FINISHED, so a phase
-             that blew its budget keeps the project flagged after it closes.
+      actief  the phase currently in progress, against its OWN budgeted hours;
+      cumul   Σ tracked / Σ budgeted over the started, budgeted, non-overhead
+              phases — "previous + active phases" taken together.
+
+    "you look at the current phase OR if the total is over budget". A finished
+    phase that overran does NOT keep the project flagged on its own: Michiel was
+    explicit that once a later phase starts and the total is back within budget,
+    the project reads ok again. Its overrun stays visible on the phase itself.
 
     The per-phase euro percentage (cost vs quoted budget) is untouched: it still
     drives the phase dots, the drawer and both analyses. Only the project badge
@@ -237,9 +241,10 @@ def project_summary(phases, thresholds=None):
     budg = sum(p.get("budget_hours") or 0 for p in timed)
     trak = sum(p.get("tracked_hours") or 0 for p in timed)
     cumul = round(trak / budg * 100, 1) if budg > 0 else None
-    fini = max((_uren_pct(p) for p in timed if p.get("glyph") == "done"),
-               default=None)
-    worst_pct = max([x for x in (cumul, fini) if x is not None], default=None)
+    # The phase in progress is the last started one: build_phases marks every
+    # earlier started phase "done", so there is at most one "progress".
+    actief = next((_uren_pct(p) for p in timed if p.get("glyph") == "progress"), None)
+    worst_pct = max([x for x in (cumul, actief) if x is not None], default=None)
     worst = color_for(worst_pct, thresholds)
     # Counts follow the same measure as the badge, so "2 fasen over budget"
     # cannot contradict the label above it. Derived here rather than read from
