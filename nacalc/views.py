@@ -5,7 +5,7 @@ import time
 
 from flask import (Blueprint, request, redirect, session, jsonify, make_response)
 
-from . import store, auth, sync, config
+from . import store, auth, sync, config, phases as phases_mod
 from .ui import pages, components
 from .i18n import t, pick_lang
 
@@ -150,9 +150,8 @@ def _months_range(a, b):
     return out
 
 
-def _base_of(naam):
-    """Merge the same phase across projects: '1. VOORONTWERP' -> 'VOORONTWERP'."""
-    return re.sub(r"^\s*\d+\.\s*", "", naam or "").strip() or (naam or "")
+def _taxonomy():
+    return store.get_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY)
 
 
 def _filter_args():
@@ -189,8 +188,14 @@ def _select_snapshots(snaps, period, d_from, d_to, pids):
     return [s for s in snaps if months & set(json.loads(s.get("activity_json") or "[]"))]
 
 
-def _aggregate_phases(sel):
-    """Per phase base-name, over the selection.
+def _aggregate_phases(sel, taxonomy=None):
+    """Per CANONICAL phase, over the selection.
+
+    Grouping goes through phases.canonical() rather than a bare number-strip, so
+    legacy quote wording collapses ('Schetsontwerp/haalbaarheid' ==
+    'Schetsontwerp', 'Aanbestedingsdossier' == 'Aanbesteding') and casing no
+    longer splits a phase in two. Resolved LIVE from the name, so an alias saved
+    in Beheer applies immediately and pre-taxonomy snapshots group correctly too.
 
     Sums are kept over MATCHED instance sets -- budget only counts where the
     instance also has billing data, and margin only where billed AND cost exist --
@@ -199,7 +204,9 @@ def _aggregate_phases(sel):
     agg = {}
     for s in sel:
         for p in json.loads(s["phases_json"] or "[]"):
-            d = agg.setdefault(_base_of(p.get("naam")), {
+            c = phases_mod.canonical(p.get("naam"), taxonomy)
+            d = agg.setdefault(c["key"], {
+                "label": c["label"], "order": c["order"],
                 "billed": 0.0, "budget_b": 0.0, "n_billed": 0,
                 "tracked": 0.0, "budget_h": 0.0,
                 "m3": 0.0, "billed3": 0.0, "cost3": 0.0, "n_m3": 0,
@@ -249,31 +256,31 @@ def analyse():
     snaps = store.list_snapshots(architectuur_only=True)
     period, d_from, d_to, pids = _filter_args()
     sel = _select_snapshots(snaps, period, d_from, d_to, pids)
-    agg = _aggregate_phases(sel)
+    agg = _aggregate_phases(sel, _taxonomy())
 
     # 1) Invoiced € vs quote budget € per phase (delta% above/below budget).
-    g1 = sorted(((k, round(d["billed"], 2), round(d["budget_b"], 2),
+    g1 = sorted(((d["label"], round(d["billed"], 2), round(d["budget_b"], 2),
                   round(d["billed"] / d["budget_b"] * 100 - 100), d["n_billed"])
-                 for k, d in agg.items() if d["budget_b"] > 0 and d["n_billed"]),
+                 for d in agg.values() if d["budget_b"] > 0 and d["n_billed"]),
                 key=lambda x: -x[3])
     # 2) Tracked vs budgeted hours per phase.
-    g2 = sorted(((k, round(d["tracked"], 1), round(d["budget_h"], 1),
+    g2 = sorted(((d["label"], round(d["tracked"], 1), round(d["budget_h"], 1),
                   round(d["tracked"] / d["budget_h"] * 100), d["n"])
-                 for k, d in agg.items() if d["budget_h"] > 0),
+                 for d in agg.values() if d["budget_h"] > 0),
                 key=lambda x: -x[3])
     # 3) Profitability per phase: invoiced − effective cost (€), paired instances only.
-    g3 = sorted(((k, round(d["m3"], 2), round(d["billed3"], 2),
+    g3 = sorted(((d["label"], round(d["m3"], 2), round(d["billed3"], 2),
                   round(d["cost3"], 2), d["n_m3"])
-                 for k, d in agg.items() if d["n_m3"]),
+                 for d in agg.values() if d["n_m3"]),
                 key=lambda x: x[1])
     # 4) Profitability per CATEGORY (client: "type is actually categorie").
     g4 = _profit_by(sel, "categorie")
     # 6) Profitability per contract type.
     g6 = _profit_by(sel, "contracttype")
     # 5) Average tracked hours per started phase.
-    g5 = sorted(((k, round(sum(d["started_hours"]) / len(d["started_hours"]), 1),
+    g5 = sorted(((d["label"], round(sum(d["started_hours"]) / len(d["started_hours"]), 1),
                   len(d["started_hours"]))
-                 for k, d in agg.items() if d["started_hours"]),
+                 for d in agg.values() if d["started_hours"]),
                 key=lambda x: -x[1])
 
     fstate = {"period": period, "from": d_from, "to": d_to, "pids": pids,
@@ -392,6 +399,33 @@ def beheer():
                              if u.get("id") == uid), uid)
                 store.add_cost_rate(uid, naam, rate, eff)
                 sync.trigger_sync()  # recompute fallback costs with the new rate
+        elif form == "phases":
+            tx = dict(_taxonomy())
+            aliases = {}
+            for line in (request.form.get("aliases") or "").splitlines():
+                if "=" not in line:
+                    continue
+                a, b = line.split("=", 1)
+                a, b = phases_mod.normalize(a), phases_mod.normalize(b)
+                # Self-mapping would be a no-op; a 2-hop chain is not resolved
+                # (canonical() hops once on purpose), so drop those too.
+                if a and b and a != b:
+                    aliases[a] = b
+            tx["aliases"] = {a: b for a, b in aliases.items() if b not in aliases}
+            tx["order"] = [k for k in (phases_mod.normalize(x)
+                                       for x in (request.form.get("order") or "").splitlines()) if k]
+            tx["overhead"] = [k for k in request.form.getlist("overhead") if k]
+            store.set_config("phase_taxonomy", tx)
+            sync.trigger_sync()   # overhead changes summary_status -> recompute
+        elif form == "phases_optimize":
+            tx = dict(_taxonomy())
+            names = store.get_config("seen_phase_names", [])
+            merged = dict(tx.get("aliases") or {})
+            merged.update(phases_mod.suggest_aliases(names, tx))
+            tx["aliases"] = merged
+            tx["order"] = phases_mod.observed_order(names, tx)
+            store.set_config("phase_taxonomy", tx)
+            sync.trigger_sync()
         elif form == "adduser":
             if not store.get_user_by_email(request.form.get("email", "")):
                 store.create_user(request.form["email"], request.form.get("naam", ""),
@@ -405,8 +439,18 @@ def beheer():
     thresholds = store.get_config("thresholds", config.DEFAULT_THRESHOLDS)
     internal_rate = store.get_config("internal_cost_rate", config.DEFAULT_INTERNAL_COST_RATE)
     external_rate = store.get_config("external_rate", config.DEFAULT_EXTERNAL_RATE)
+    tx = _taxonomy()
+    seen_names = store.get_config("seen_phase_names", [])
+    # One entry per CANONICAL phase (aliases already collapsed), in quote order.
+    seen = {}
+    for n in seen_names:
+        c = phases_mod.canonical(n, tx)
+        seen.setdefault(c["key"], (c["order"], c["label"]))
+    seen_keys = [(k, lbl) for k, (_o, lbl) in sorted(seen.items(), key=lambda kv: kv[1])]
     content = pages.render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
                                   has_tl_costs=store.get_config("has_project_costs", None),
                                   tl_users=store.get_config("tl_users", []),
-                                  cost_rates=store.list_cost_rates())
+                                  cost_rates=store.list_cost_rates(),
+                                  taxonomy=tx, seen_keys=seen_keys,
+                                  suggestions=phases_mod.suggest_aliases(seen_names, tx))
     return render_page("beheer", t("be_title", lang), "", content)

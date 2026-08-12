@@ -213,6 +213,73 @@ assert "spreadsheetml" in r.headers.get("Content-Type", ""), "wrong export mimet
 assert "attachment" in r.headers.get("Content-Disposition", ""), "export not an attachment"
 print("OK   xlsx export: zip magic, mimetype, attachment, login-protected")
 
+# --- feedback round 4: phase taxonomy (lot 1) ------------------------------
+from nacalc import phases as phases_mod   # noqa: E402
+
+
+def post(path, data, expect=302):
+    with client.session_transaction() as s:
+        s["uid"] = uid
+    r = client.post(path, data=data)
+    ok = r.status_code == expect
+    print(f"{'OK  ' if ok else 'FAIL'} POST {path:47s} -> {r.status_code}"
+          f"{'' if ok else f' (expected {expect})'}")
+    if not ok:
+        failures.append(f"POST {path}")
+    return r
+
+
+# The Beheer card only lists phases the sync has actually seen. 'Nazorgdossier'
+# is deliberately NOT in DEFAULT_ALIASES, so it exercises the suggestion path
+# (the schetsontwerp pair is already shipped as a default and must stay silent).
+store.set_config("seen_phase_names", ["1. ADMINISTRATIE", "2. Schetsontwerp",
+                                      "2. Schetsontwerp/haalbaarheid", "3. VOORONTWERP",
+                                      "6. Nazorg", "7. Nazorgdossier"])
+check("/app/beheer", 200, login=True, contains="Fasen")
+check("/app/beheer", 200, login=True, contains='name="form" value="phases"')
+# Unknown merge -> offered as a suggestion; the already-aliased pair is not.
+r = check("/app/beheer", 200, login=True, contains="Voorstellen op basis van Teamleader")
+assert "nazorgdossier" in r.get_data(as_text=True), "la fusion inedite n'est pas proposee"
+
+# Saving the form must persist exactly what was ticked/typed.
+post("/app/beheer", {"form": "phases", "overhead": ["administratie"],
+                     "aliases": ("schetsontwerp/haalbaarheid = schetsontwerp\n"
+                                 "7. Nazorgdossier = 6. Nazorg\n\nbad line\n"),
+                     "order": "1. ADMINISTRATIE\n3. VOORONTWERP\n"})
+_tx = store.get_config("phase_taxonomy")
+assert _tx["overhead"] == ["administratie"], f"overhead not saved: {_tx}"
+assert _tx["aliases"] == {"schetsontwerp/haalbaarheid": "schetsontwerp",
+                          "nazorgdossier": "nazorg"}, \
+    f"aliases not saved/normalised: {_tx}"
+assert _tx["order"] == ["administratie", "voorontwerp"], \
+    f"order not normalised (numbers must be stripped): {_tx}"
+print("OK   taxonomie sauvegardee et normalisee (numeros + casse)")
+
+# With the alias saved, the suggestion must disappear (it is now applied).
+check("/app/beheer", 200, login=True, excludes="Voorstellen op basis van Teamleader")
+
+# The optimise button seeds aliases AND order from what Teamleader shows.
+store.set_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY | {"aliases": {}, "order": []})
+post("/app/beheer", {"form": "phases_optimize"})
+_tx = store.get_config("phase_taxonomy")
+assert _tx["aliases"].get("schetsontwerp/haalbaarheid") == "schetsontwerp", \
+    f"optimise did not propose the merge: {_tx}"
+assert _tx["order"][:1] == ["administratie"], f"optimise did not order by number: {_tx}"
+print("OK   'optimaliseer fasenamen' remplit alias + volgorde")
+
+# A phase flagged overhead must NOT raise an alert either (same rule as the rollup).
+store.set_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY)
+from nacalc import sync as sync_mod, calc as calc_mod, config as cfg_mod  # noqa: E402
+_admin_red = calc_mod.build_phases(
+    [{"name": "1. ADMINISTRATIE", "budget_eur": 250.0, "spent_eur": 900.0,
+      "tracked_hours": 9.0, "budget_hours": 3.0}],
+    cfg_mod.DEFAULT_THRESHOLDS, phases_mod.DEFAULT_TAXONOMY)
+sync_mod._make_meldingen({"project_id": "fx-oh", "project_key": "A999", "naam": "Overhead",
+                          "phases_json": json.dumps(_admin_red)})
+assert not [m for m in store.list_meldingen() if m["project_id"] == "fx-oh"], \
+    "une fase overhead a genere une melding"
+print("OK   une fase overhead ne genere aucune melding")
+
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 
 if failures:

@@ -237,6 +237,26 @@ S = {
     "be_admin": {"nl": "Beheerder", "en": "Admin"},
     "be_saved": {"nl": "Opgeslagen.", "en": "Saved."},
     "be_front_rate": {"nl": "Front-office tarief (€/uur, fallback)", "en": "Front-office rate (€/hour, fallback)"},
+    # fasen (taxonomie) — feedback 2026-08
+    "be_ph_title": {"nl": "Fasen", "en": "Phases"},
+    "be_ph_sub": {"nl": "Fasenamen uit Teamleader samenvoegen, hun volgorde bepalen, en overheadfasen uit de budgetstatus houden.",
+                  "en": "Merge Teamleader phase names, set their order, and keep overhead phases out of the budget status."},
+    "be_ph_overhead": {"nl": "Overhead — telt NIET mee voor 'dreigt over' / 'over budget'",
+                       "en": "Overhead — does NOT count towards 'at risk' / 'over budget'"},
+    "be_ph_overhead_hint": {"nl": "Op deze fasen registreren jullie amper iets; een klein budget maakt ze meteen rood en trekt het hele dossier mee.",
+                            "en": "Barely anything is booked on these; a small budget turns them red immediately and drags the whole project along."},
+    "be_ph_aliases": {"nl": "Samenvoegen (één per lijn: oude naam = nieuwe naam)",
+                      "en": "Merge (one per line: old name = new name)"},
+    "be_ph_aliases_hint": {"nl": "Bv. schetsontwerp/haalbaarheid = schetsontwerp. Hoofdletters en het nummer vooraan spelen geen rol.",
+                           "en": "E.g. schetsontwerp/haalbaarheid = schetsontwerp. Case and the leading number don't matter."},
+    "be_ph_order": {"nl": "Volgorde (één fase per lijn, zoals in jullie offerte)",
+                    "en": "Order (one phase per line, as in your quote)"},
+    "be_ph_optimize": {"nl": "Optimaliseer fasenamen", "en": "Optimise phase names"},
+    "be_ph_optimize_hint": {"nl": "Stelt automatisch samenvoegingen én een volgorde voor op basis van wat er vandaag in Teamleader staat. Je kan alles daarna nog aanpassen.",
+                            "en": "Proposes merges and an order automatically, based on what is in Teamleader today. You can still adjust everything afterwards."},
+    "be_ph_suggestions": {"nl": "Voorstellen op basis van Teamleader:", "en": "Suggestions based on Teamleader:"},
+    "be_ph_none_seen": {"nl": "Nog geen fasenamen gezien — draai eerst een sync.",
+                        "en": "No phase names seen yet — run a sync first."},
 }
 
 

@@ -6,7 +6,7 @@ import re
 import threading
 import time
 
-from . import config, store, teamleader as TL, calc
+from . import config, store, teamleader as TL, calc, phases as phases_mod
 
 _trigger = threading.Event()
 _thread = None
@@ -96,7 +96,7 @@ def _is_architectuur(cfs, cfids):
     return type_norm not in config.NON_ARCHITECTUUR_TYPES
 
 
-def _compute(item, mappings, thresholds, internal_rate, rates_map):
+def _compute(item, mappings, thresholds, internal_rate, rates_map, taxonomy=None):
     pid = item["id"]
     cfids, wt = mappings["cfids"], mappings["wt"]
     info = TL.project_info(pid)
@@ -130,7 +130,7 @@ def _compute(item, mappings, thresholds, internal_rate, rates_map):
             # Budgeted hours on the group; quotation section hours as fallback.
             "budget_hours": TL.hours(g.get("time_estimated")) or qh.get(_norm(g.get("title")), 0)}
            for g in groups]
-    phases = calc.build_phases(raw, thresholds)
+    phases = calc.build_phases(raw, thresholds, taxonomy)
     summary = calc.project_summary(phases)
 
     entries = TL.project_time_entries(pid)
@@ -237,6 +237,11 @@ def _make_meldingen(snap):
     pid = snap["project_id"]
     store.clear_meldingen_for(pid)
     for p in json.loads(snap["phases_json"]):
+        # Same exclusions as calc._rankable: an overhead phase (administratie)
+        # or an unbudgeted one must not raise an alert either, otherwise the
+        # Meldingen page keeps nagging about exactly what the rollup ignores.
+        if p.get("overhead") or not p.get("applicable"):
+            continue
         if p["started"] and p["color"] in ("amber", "red", "darkred"):
             sev = p["color"]
             store.upsert_melding(pid, snap["project_key"], snap["naam"], p["naam"],
@@ -263,7 +268,9 @@ def run_full():
             pass
         thresholds = store.get_config("thresholds", config.DEFAULT_THRESHOLDS)
         internal_rate = store.get_config("internal_cost_rate", config.DEFAULT_INTERNAL_COST_RATE)
+        taxonomy = store.get_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY)
         rates_map = store.cost_rate_map()
+        seen_phase_names = set()   # feeds the Beheer "optimaliseer fasenamen" button
         items = TL.tl_all("projects-v2/projects.list", {}, size=20)
         seen = []
         saw_tl_costs = False
@@ -272,13 +279,16 @@ def run_full():
             if item.get("status") != "open":
                 continue
             try:
-                snap = _compute(item, mappings, thresholds, internal_rate, rates_map)
+                snap = _compute(item, mappings, thresholds, internal_rate, rates_map,
+                                taxonomy)
             except Exception:
                 failed += 1      # transient API error on one project
                 continue
             store.upsert_snapshot(snap)
             _make_meldingen(snap)
             seen.append(snap["project_id"])
+            seen_phase_names.update(p["naam"] for p in json.loads(snap["phases_json"])
+                                    if p.get("naam"))
             if not snap["cost_estimated"]:
                 saw_tl_costs = True
             count += 1
@@ -287,6 +297,9 @@ def run_full():
             # Auto-detected: True when Teamleader exposed real costs (the
             # 'Costs on projects' permission is on for the connected user).
             store.set_config("has_project_costs", saw_tl_costs)
+            # The raw phase vocabulary, so Beheer can propose alias merges and a
+            # chronological order without anyone re-reading the xlsx export.
+            store.set_config("seen_phase_names", sorted(seen_phase_names))
         if failed:
             # A project we couldn't compute is NOT gone from Teamleader. Pruning
             # here would delete a live project (and, if every call failed, wipe

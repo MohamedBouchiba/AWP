@@ -18,7 +18,7 @@ import sys
 # Make the repo root importable when run as `python scripts/unit_test.py`.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nacalc import calc, config, sync, teamleader as TL  # noqa: E402
+from nacalc import calc, config, phases, sync, teamleader as TL  # noqa: E402
 
 failures = []
 
@@ -159,8 +159,10 @@ summ = calc.project_summary(ph)
 eq("statut projet = 'over'", summ["status"], "over")
 eq("2 fases en depassement (VOORONTWERP + UITVOERINGSDOSSIER)", summ["n_over"], 2)
 eq("0 fase en 'dreigt over'", summ["n_warn"], 0)
-eq("7 fases actives (NAZORG non gestart + MEERWERKEN sans budget exclues)",
-   summ["started_count"], 7)
+# 9 fases - NAZORG (non gestart) - MEERWERKEN (sans budget) - ADMINISTRATIE
+# (overhead, lot 1) = 6 fases qui pesent sur le statut.
+eq("6 fases comptees (NAZORG, MEERWERKEN et l'overhead exclus)",
+   summ["started_count"], 6)
 
 print("\n--- A346 : project_totals (le denominateur correct des heures) ---")
 tot = calc.project_totals(ph)
@@ -223,6 +225,91 @@ two = calc.build_phases(
 eq("fase 1 'done' car la 2 a demarre", two[0]["done"], True)
 eq("la derniere fase n'est jamais 'done'", two[1]["done"], False)
 
+
+# --------------------------------------------------------------------------
+# 8. Taxonomie des fases (lot 1) — alias, overhead, ordre
+# --------------------------------------------------------------------------
+print("\n--- phases.normalize / strip_number ---")
+eq("'1. VOORONTWERP' -> 'voorontwerp'", phases.normalize("1. VOORONTWERP"), "voorontwerp")
+eq("casse repliee : 'Voorontwerp' == '1. VOORONTWERP'",
+   phases.normalize("Voorontwerp"), phases.normalize("1. VOORONTWERP"))
+eq("espaces internes compresses", phases.normalize("Schets   ontwerp"), "schets ontwerp")
+eq("'1) X' -> 'X'", phases.strip_number("1) X"), "X")
+eq("'1 - X' -> 'X'", phases.strip_number("1 - X"), "X")
+eq("sans numero : inchange", phases.strip_number("MEERWERKEN"), "MEERWERKEN")
+eq("numero de tete lu", phases.leading_number("3. VOORONTWERP"), 3)
+eq("pas de numero -> None", phases.leading_number("MEERWERKEN"), None)
+
+print("\n--- phases.canonical : les demandes du client ---")
+# "Schetsontwerp/haalbaarheid is eigenlijk hetzelfde als schetsontwerp"
+eq("alias 'Schetsontwerp/haalbaarheid' -> schetsontwerp",
+   phases.canonical("2. Schetsontwerp/haalbaarheid")["key"], "schetsontwerp")
+# "Aanbestedingsdossier is hetzelfde als aanbesteding"
+eq("alias 'AANBESTEDINGSDOSSIER' -> aanbesteding",
+   phases.canonical("5. AANBESTEDINGSDOSSIER")["key"], "aanbesteding")
+eq("meme cle que la fase cible",
+   phases.canonical("Aanbestedingsdossier")["key"], phases.canonical("5. Aanbesteding")["key"])
+# "Het onderdeel administratie moet niet mee opgenomen worden"
+eq("administratie = overhead", phases.canonical("1. ADMINISTRATIE")["overhead"], True)
+eq("voorontwerp != overhead", phases.canonical("3. VOORONTWERP")["overhead"], False)
+# NON-REGRESSION: le libelle doit rester identique a l'ancien _base_of.
+eq("libelle inchange vs _base_of", phases.canonical("3. VOORONTWERP")["label"], "VOORONTWERP")
+eq("libelle inchange sans numero", phases.canonical("MEERWERKEN")["label"], "MEERWERKEN")
+# "Kunnen de fases chronologisch staan ipv per %"
+ordered = sorted(["9. BOUWCOORDINATIE", "1. ADMINISTRATIE", "3. VOORONTWERP",
+                  "2. SCHETSONTWERP"], key=phases.sort_key)
+eq("ordre chronologique = layout de l'offerte", ordered,
+   ["1. ADMINISTRATIE", "2. SCHETSONTWERP", "3. VOORONTWERP", "9. BOUWCOORDINATIE"])
+eq("fase inconnue passe apres les fases connues",
+   phases.canonical("ZZZ ONBEKEND")["order"] > phases.canonical("9. BOUWCOORDINATIE")["order"],
+   True)
+# Une config vide ne doit jamais lever ni tout marquer overhead.
+eq("taxonomie vide -> pas d'overhead",
+   phases.canonical("1. ADMINISTRATIE", {})["overhead"], False)
+eq("taxonomie vide -> cle quand meme normalisee",
+   phases.canonical("1. ADMINISTRATIE", {})["key"], "administratie")
+
+print("\n--- phases.suggest_aliases (bouton 'optimaliseer') ---")
+sug = phases.suggest_aliases(["1. Schetsontwerp", "2. Schetsontwerp/haalbaarheid",
+                              "3. Aanbesteding", "4. Aanbestedingsdossier",
+                              "5. Voorontwerp"], {"aliases": {}, "order": [], "overhead": []})
+eq("propose schetsontwerp/haalbaarheid -> schetsontwerp",
+   sug.get("schetsontwerp/haalbaarheid"), "schetsontwerp")
+eq("propose aanbestedingsdossier -> aanbesteding",
+   sug.get("aanbestedingsdossier"), "aanbesteding")
+eq("ne propose rien pour une fase isolee", "voorontwerp" in sug, False)
+eq("aucune suggestion sur un vocabulaire deja propre",
+   phases.suggest_aliases(["1. Voorontwerp", "2. Nazorg"],
+                          {"aliases": {}, "order": [], "overhead": []}), {})
+
+print("\n--- A346 : l'overhead ne doit RIEN changer ici (administratie a 48%) ---")
+ph_tx = calc.build_phases(A346, TH, phases.DEFAULT_TAXONOMY)
+summ_tx = calc.project_summary(ph_tx)
+eq("statut toujours 'over'", summ_tx["status"], "over")
+eq("toujours 2 fases en depassement", summ_tx["n_over"], 2)
+eq("administratie marquee overhead dans le snapshot",
+   {p["naam"]: p["overhead"] for p in ph_tx}["1. ADMINISTRATIE"], True)
+# project_totals ne doit PAS exclure l'overhead : c'est du vrai travail budgete.
+tot_tx = calc.project_totals(ph_tx)
+eq("heures inchangees : l'overhead reste compte", tot_tx, tot)
+
+print("\n--- le cas que le client decrit : administratie seule fait basculer ---")
+ADMIN_ONLY = [
+    # 249.90 EUR de budget : la premiere heure pointee fait exploser le %.
+    {"name": "1. ADMINISTRATIE", "budget_eur": 249.90, "spent_eur": 700.00,
+     "tracked_hours": 8.0, "budget_hours": 3.0},
+    {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 2000.0,
+     "tracked_hours": 20.0, "budget_hours": 100.0},
+]
+NO_TX = {"aliases": {}, "order": [], "overhead": [], "labels": {}}
+eq("AVANT (taxonomie desactivee) : le projet est 'over' a cause de l'administratie",
+   calc.project_summary(calc.build_phases(ADMIN_ONLY, TH, NO_TX))["status"], "over")
+eq("APRES : le projet repasse 'ok'",
+   calc.project_summary(calc.build_phases(ADMIN_ONLY, TH, phases.DEFAULT_TAXONOMY))["status"],
+   "ok")
+eq("plus aucune fase comptee en depassement",
+   calc.project_summary(calc.build_phases(ADMIN_ONLY, TH, phases.DEFAULT_TAXONOMY))["n_over"],
+   0)
 
 print()
 if failures:

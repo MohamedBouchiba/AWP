@@ -424,8 +424,52 @@ msSync();
     return (f'<p class="panel-s" style="margin-bottom:12px">{esc(t("an_sub",lang))}</p>{fbar}'
             f'<div class="grid2">{p1}{p2}{p3}{p4}{p5}{p6}</div>{fjs}')
 
+def _phase_card(lang, taxonomy, seen_keys, suggestions):
+    """Beheer card for the phase taxonomy: overhead, merges, order.
+
+    `seen_keys` is [(canonical_key, label)] observed in the last sync, so the
+    admin ticks real phases instead of typing them. Aliases and order are plain
+    textareas -- robust, copy-pasteable, and they survive a phase we've never
+    seen (the checkbox list can't show those).
+    """
+    tx = taxonomy or {}
+    overhead = set(tx.get("overhead") or [])
+    if seen_keys:
+        boxes = "".join(
+            f'<label class="be-ph-opt"><input type="checkbox" name="overhead" value="{esc(k)}"'
+            f'{" checked" if k in overhead else ""}> {esc(lbl)}</label>'
+            for k, lbl in seen_keys)
+    else:
+        boxes = f'<p class="panel-s">{esc(t("be_ph_none_seen",lang))}</p>'
+    alias_txt = "\n".join(f"{a} = {b}" for a, b in sorted((tx.get("aliases") or {}).items()))
+    order_txt = "\n".join(tx.get("order") or [])
+    sug = ""
+    if suggestions:
+        rows = "".join(f"<li>{esc(a)} &rarr; {esc(b)}</li>" for a, b in sorted(suggestions.items()))
+        sug = (f'<p class="panel-s" style="margin-top:10px">{esc(t("be_ph_suggestions",lang))}</p>'
+               f'<ul class="be-ph-sug">{rows}</ul>')
+    return f"""<div class="be-card"><h2>{esc(t('be_ph_title',lang))}</h2>
+<p class="panel-s">{esc(t('be_ph_sub',lang))}</p>
+<form method="post" action="/app/beheer"><input type="hidden" name="form" value="phases">
+<div class="be-ph-lab">{esc(t('be_ph_overhead',lang))}</div>
+<div class="be-ph-hint">{esc(t('be_ph_overhead_hint',lang))}</div>
+<div class="be-ph-list">{boxes}</div>
+<div class="be-ph-lab">{esc(t('be_ph_aliases',lang))}</div>
+<div class="be-ph-hint">{esc(t('be_ph_aliases_hint',lang))}</div>
+<textarea name="aliases" rows="4" class="be-ph-ta">{esc(alias_txt)}</textarea>
+<div class="be-ph-lab">{esc(t('be_ph_order',lang))}</div>
+<textarea name="order" rows="6" class="be-ph-ta">{esc(order_txt)}</textarea>
+<button class="btn" style="margin-top:12px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button>
+</form>
+<form method="post" action="/app/beheer" style="margin-top:10px"><input type="hidden" name="form" value="phases_optimize">
+<button class="btn" type="submit">✨ {esc(t('be_ph_optimize',lang))}</button>
+<span class="be-ph-hint" style="margin-left:8px">{esc(t('be_ph_optimize_hint',lang))}</span></form>
+{sug}</div>"""
+
+
 def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
-                  has_tl_costs=None, tl_users=None, cost_rates=None):
+                  has_tl_costs=None, tl_users=None, cost_rates=None,
+                  taxonomy=None, seen_keys=None, suggestions=None):
     msg = f'<div class="savemsg">{esc(t("be_saved",lang))}</div>' if saved else ""
     user_rows = "".join(
         f'<div class="be-row"><span class="nm">{esc(u["naam"] or u["email"])}</span>'
@@ -469,6 +513,7 @@ def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
 &nbsp; red &gt; <input name="red" type="number" value="{th['red']}" style="width:80px"> %
 &nbsp; dark-red ≥ <input name="darkred" type="number" value="{th['darkred']}" style="width:80px"> %</div>
 <button class="btn" style="margin-top:8px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button></form></div>
+{_phase_card(lang, taxonomy, seen_keys, suggestions)}
 <div class="be-card"><h2>{esc(t('be_users',lang))}</h2>{user_rows}
 <form method="post" action="/app/beheer" style="margin-top:14px"><input type="hidden" name="form" value="adduser">
 <div class="be-row"><input name="naam" placeholder="Naam" required><input name="email" type="email" placeholder="E-mail" required>

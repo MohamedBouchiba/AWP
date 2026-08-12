@@ -7,6 +7,7 @@ Per-phase status is driven by Teamleader's per-group MONEY fields:
   the 'Costs on projects' permission hides them).
 Color = budget status; glyph = progress.
 """
+from . import phases as phases_mod   # pure module too -- no IO, no cycle
 
 SEVERITY_ORDER = ["green", "amber", "red", "darkred"]
 
@@ -37,11 +38,16 @@ def _money_or_none(v):
     return round(float(v), 2) if v is not None else None
 
 
-def build_phases(raw_phases, thresholds):
+def build_phases(raw_phases, thresholds, taxonomy=None):
     """raw_phases: list of {name, budget_eur, spent_eur, budget_hours,
     tracked_hours, billed_eur, cost_eur} (any order; last three optional).
 
     Returns ordered list of phase dicts with pct/color/glyph/flags computed.
+
+    Rows stay in the PROJECT's own order (leading number) -- that is what the
+    drawer shows. `taxonomy` only annotates each phase with its cross-project
+    identity (canon/order/overhead) so the analysis can regroup and the rollup
+    can skip overhead; it never reorders the project's own phases.
     """
     rows = sorted(raw_phases, key=lambda p: _phase_sort_key(p.get("name")))
     out = []
@@ -55,8 +61,15 @@ def build_phases(raw_phases, thresholds):
         # Started = money consumed OR hours logged (hours can precede the first
         # simulated-spend rollup, and this is the feedback's definition).
         started = se > 0 or th > 0
+        cn = phases_mod.canonical(p.get("name"), taxonomy)
         out.append({
             "naam": p.get("name"),
+            # Cross-project identity, persisted in phases_json so the analysis
+            # and the alerts read the same answer the sync computed.
+            "canon": cn["key"],
+            "canon_label": cn["label"],
+            "canon_order": cn["order"],
+            "overhead": cn["overhead"],
             "budget_eur": round(be, 2),
             "spent_eur": round(se, 2),
             "budget_hours": round(bh, 1),
@@ -92,9 +105,24 @@ def _active(phases):
     return [p for p in phases if p["started"] and p["applicable"] and p["color"] in SEVERITY_ORDER]
 
 
+def _rankable(phases):
+    """_active minus overhead phases.
+
+    Client feedback: "Het onderdeel administratie moet niet mee opgenomen worden
+    in de toggle dreigt over te gaan. Technisch gezien registreren we amper iets
+    op dit onderdeel, dit is een overheadskost." A €250 admin budget goes over
+    100% on the first hour booked and drags the whole project red.
+
+    Deliberately NOT applied to project_totals(): overhead is still real work
+    with a real time budget, so it keeps counting in the hours bar. Only the
+    budget-status rollup ignores it.
+    """
+    return [p for p in _active(phases) if not p.get("overhead")]
+
+
 def project_summary(phases):
-    """Strictest budget status over started, budgeted phases, with counts."""
-    active = _active(phases)
+    """Strictest budget status over started, budgeted, non-overhead phases."""
+    active = _rankable(phases)
     if not active:
         return {"status": "none", "n_over": 0, "n_warn": 0, "started_count": 0}
     worst = "green"

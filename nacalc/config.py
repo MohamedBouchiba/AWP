@@ -23,7 +23,9 @@ DEFAULT_SYNC_INTERVAL_MINUTES = int(os.environ.get("SYNC_INTERVAL_MINUTES", "60"
 # starts producing new/changed fields: on boot, a cache written by an older
 # version is refreshed once (see sync._loop), so the UI never shows stale rows
 # under new labels. Only bumped after a SUCCESSFUL full sync.
-CURRENT_DATA_VERSION = 3
+# 4: phases carry their canonical identity (canon/canon_label/canon_order/
+#    overhead) so the analysis groups and the rollup skips overhead.
+CURRENT_DATA_VERSION = 4
 
 # Project custom-field labels we map to ids on first sync (Teamleader 'project' context).
 CF_LABELS = {

@@ -5,7 +5,7 @@ import os
 import sqlite3
 import time
 
-from . import config
+from . import config, phases
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -104,6 +104,7 @@ def _seed_default_config():
         "sync_interval_minutes": config.DEFAULT_SYNC_INTERVAL_MINUTES,
         "custom_field_ids": {},
         "worktype_ids": {},
+        "phase_taxonomy": phases.DEFAULT_TAXONOMY,
     }
     for k, v in defaults.items():
         if get_config(k, None) is None:
