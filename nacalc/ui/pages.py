@@ -8,7 +8,7 @@ from html import escape as esc
 from ..i18n import t
 from .components import (eur, h1, dots, bar_color, _uren_ratio_color,
                         _status_cell, _abar, visible_marge, visible_marge_pct,
-                        invoiced_total, uren_txt as _uren_txt)
+                        invoiced_total, uren_txt as _uren_txt, info_bubble)
 
 _CSS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -337,18 +337,20 @@ def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
     _inc = [p for p in phases if p.get("started") and p.get("applicable")]
     _exc = [(p, t("ph_reason_nobudget" if not p.get("applicable") else "ph_reason_notstarted", lang))
             for p in phases if not (p.get("started") and p.get("applicable"))]
-    _tip = [t("dr_uren_tip_head", lang).format(n=len(_inc), m=len(_exc))]
+    # Two lines, no more: the count of what is in, and the count of what is out
+    # with those named in brackets. Listing the included phases as well just
+    # buried the answer.
+    _rows = [("ok", t("dr_uren_tip_head", lang).format(n=len(_inc)))]
     if _exc:
-        _tip.append(t("dr_uren_tip_out", lang).format(
-            lijst=", ".join(f'{p["naam"]} ({r})' for p, r in _exc)))
-    for p in _inc:
-        # Named explicitly: it is counted here but deliberately ignored by the
-        # budget status, which is exactly the distinction people trip over.
-        if p.get("overhead"):
-            _tip.append(t("dr_uren_tip_overhead", lang).format(naam=p["naam"]))
-    if s.get("uren_begroot"):
-        _tip.append(t("dr_uren_tip_total", lang).format(n=h1(s["uren_begroot"])))
-    uren_info = f'<span class="pinfo" title="{esc(" ".join(_tip))}">i</span>'
+        _rows.append(("no", t("dr_uren_tip_out", lang).format(
+            m=len(_exc), lijst=", ".join(p["naam"] for p, _r in _exc))))
+    # Overhead is counted HERE but deliberately ignored by the budget status,
+    # and that is exactly the distinction people trip over.
+    _note = " ".join(
+        [t("dr_uren_tip_overhead", lang).format(naam=p["naam"]) for p in _inc if p.get("overhead")]
+        + ([t("dr_uren_tip_total", lang).format(n=h1(s["uren_begroot"]))]
+           if s.get("uren_begroot") else []))
+    uren_info = info_bubble(t("dr_uren_tip_title", lang), _rows, _note)
     uren_sub = (f'<div class="mc-sub">{esc(t("dr_uren_sub",lang).format(n=h1(bg)))}</div>'
                 if bg else f'<div class="mc-sub">{esc(t("dr_uren_sub_none",lang))}</div>')
     # Invoices sent outside Teamleader: admin-only, and it posts as a normal form
@@ -384,7 +386,10 @@ def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
     else:
         af_html = ""
     # The rule was three lines of blue text in the cell; it belongs in a bubble.
-    af_info = f'<span class="pinfo" title="{esc(t("dr_afgerond_hint",lang).format(n=afgerond_maanden))}">i</span>'
+    af_info = info_bubble(t("dr_afgerond_title", lang), [
+        ("", t("dr_afgerond_rule", lang).format(n=afgerond_maanden)),
+        ("", t("dr_afgerond_why", lang)),
+    ])
     return f"""<div class="dr-head"><button class="x" onclick="closeDrawer()">×</button>
 <h2>{esc(s["project_key"] or "")} · {esc(s["naam"] or "")}</h2>
 <div class="m">{esc(s["adres"] or "")} &nbsp;•&nbsp; {esc(s["verantw_arch"] or "")}</div>
@@ -627,26 +632,22 @@ def _phase_card(lang, taxonomy, seen_keys, suggestions):
         # One row per phase, with what the setting is worth: how many projects
         # contain it, and in how many it currently sits at/over the threshold —
         # i.e. how many would actually change if you exclude it.
-        tag = f'<span class="ph-tag">{esc(t("be_ph_tag", lang))}</span>'
-        tip = esc(t("be_ph_count_tip", lang))
-        rows_html = []
+        # Plain checkboxes in a dense multi-column grid: 30+ phases fit in a
+        # handful of rows instead of a full-height table. Ticked = counts
+        # towards the budget status.
+        items = []
         for d in seen_keys:
-            over = f'<b>{d["n_over"]}</b>' if d["n_over"] else "—"
-            rows_html.append(
-                f'<tr class="{"is-oh" if d["overhead"] else ""}">'
-                f'<td class="ph-n">{esc(d["label"])}{tag if d["overhead"] else ""}</td>'
-                f'<td class="num">{d["n"]}</td>'
-                f'<td class="num">{over}</td>'
-                f'<td class="ph-sw"><label class="sw" title="{tip}">'
+            meta = str(d["n"])
+            if d["n_over"]:
+                meta += f' · <b>{d["n_over"]}</b>{esc(t("be_ph_over_short", lang))}'
+            items.append(
+                f'<label class="ph-i{" is-oh" if d["overhead"] else ""}" '
+                f'title="{esc(t("be_ph_count_tip", lang))}">'
                 f'<input type="checkbox" name="meetellen" value="{esc(d["key"])}"'
-                f'{"" if d["overhead"] else " checked"}><span></span></label></td></tr>')
-        body = "".join(rows_html)
-        table = (f'<div class="tablewrap ph-wrap"><table class="ph-tab"><thead><tr>'
-                 f'<th>{esc(t("be_ph_col_fase",lang))}</th>'
-                 f'<th class="num">{esc(t("be_ph_col_n",lang))}</th>'
-                 f'<th class="num">{esc(t("be_ph_col_over",lang))}</th>'
-                 f'<th>{esc(t("be_ph_col_count",lang))}</th>'
-                 f'</tr></thead><tbody>{body}</tbody></table></div>'
+                f'{"" if d["overhead"] else " checked"}>'
+                f'<span class="ph-t">{esc(d["label"])}</span>'
+                f'<span class="ph-m">{meta}</span></label>')
+        table = (f'<div class="ph-grid">{"".join(items)}</div>'
                  # Which keys this form showed, so unticking one can be told
                  # apart from a phase the form never listed.
                  f'<input type="hidden" name="shown" value="{esc(",".join(d["key"] for d in seen_keys))}">')

@@ -79,6 +79,24 @@ def visible_marge_pct(s):
     return round(m / basis * 100) if basis else 0
 
 
+def info_bubble(title, rows, note=""):
+    """A readable info popover, not a native tooltip.
+
+    `title=` crams everything onto one unstyled line, which is unreadable as soon
+    as there is more than a short sentence. This renders a small card on hover
+    or keyboard focus, with one line per item.
+
+    rows: list of (kind, text) — kind is "ok" (counted), "no" (not counted)
+    or "" (plain).
+    """
+    items = "".join(
+        f'<span class="ib-r{" ib-" + k if k else ""}">{esc(str(txt))}</span>'
+        for k, txt in rows if txt)
+    note_html = f'<span class="ib-note">{esc(note)}</span>' if note else ""
+    return (f'<span class="ib" tabindex="0" role="note" aria-label="{esc(title)}">i'
+            f'<span class="ib-pop"><b>{esc(title)}</b>{items}{note_html}</span></span>')
+
+
 def xl_safe(v):
     """Neutralise spreadsheet formula injection in exported text cells."""
     s = "" if v is None else str(v)

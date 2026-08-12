@@ -587,17 +587,24 @@ print("OK   reversible dans les deux sens")
 # L'interface de reglage doit etre le tableau, avec l'impact chiffre.
 r = check("/app/beheer", 200, login=True, contains='name="meetellen"')
 be = r.get_data(as_text=True)
-assert 'class="ph-tab"' in be, "la carte Fasen n'utilise pas le tableau"
+assert 'class="ph-grid"' in be, "la carte Fasen n'utilise pas la grille compacte"
+assert 'type="checkbox" name="meetellen"' in be, "ce ne sont pas de vraies cases a cocher"
 assert 'name="shown"' in be, "le formulaire ne dit pas quelles fases il a listees"
-assert "Nu boven drempel" in be, "la colonne d'impact est absente"
-print("OK   reglage des fases : tableau + colonne d'impact")
+assert "boven drempel" in be, "l'indication d'impact est absente"
+print("OK   reglage des fases : cases a cocher en grille compacte + impact")
 
 # La bulle d'info a remplace le long texte bleu dans la fiche.
 r = client.get("/app/project/fx-new")
 body = r.get_data(as_text=True)
-assert body.count("Automatisch = afgerond zodra") == 1, "texte de la regle en double"
-assert 'class="pinfo"' in body, "pas de bulle d'info dans la fiche"
-print("OK   bulles d'info en place")
+assert 'class="ib-pop"' in body, "pas d'encart d'info dans la fiche"
+assert body.count("Automatisch: afgerond zodra") == 1, "regle afgerond en double"
+# L'encart des uren doit rester COURT : deux lignes, pas la liste des inclus.
+inner = re.search(r'Welke fasen zitten in dit cijfer\?</b>(.*?)</span></span>', body, re.S)
+assert inner, "encart uren introuvable"
+assert inner.group(1).count('class="ib-r') <= 2, \
+    f"l'encart liste trop de lignes : {inner.group(1)[:300]}"
+assert "meegeteld" in inner.group(1), "l'encart ne dit pas combien de fases sont comptees"
+print("OK   encarts d'info structures et courts")
 
 # Le slash orphelin : il faut une fase SANS budget d'heures pour l'exercer.
 # fx-zero a exactement ca (budget_hours=0) -- la fixture precedente avait un
