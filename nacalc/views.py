@@ -5,7 +5,7 @@ import time
 
 from flask import (Blueprint, request, redirect, session, jsonify, make_response)
 
-from . import store, auth, sync, config, phases as phases_mod
+from . import store, auth, sync, config, calc, phases as phases_mod
 from .ui import pages, components
 from .i18n import t, pick_lang
 
@@ -116,8 +116,10 @@ def project_detail(pid):
     # Names come from the cached tl_users config (written by the sync thread) --
     # pages never call the Teamleader API.
     names = {x.get("id"): x.get("name") for x in store.get_config("tl_users", [])}
+    idle = store.get_config("afgerond_maanden", config.DEFAULT_AFGEROND_MAANDEN)
     return pages.render_drawer(get_lang(), s, is_admin=bool(u and u["is_admin"]),
-                               user_names=names)
+                               user_names=names, afgerond=is_afgerond(s, months_idle=idle),
+                               afgerond_maanden=idle)
 
 
 @bp.post("/app/project/<pid>/gefactureerd")
@@ -135,6 +137,15 @@ def set_manual_invoiced(pid):
     except ValueError:
         bedrag = None
     store.set_manual_invoiced(pid, bedrag)
+    return redirect(request.referrer or "/app")
+
+
+@bp.post("/app/project/<pid>/afgerond")
+@auth.admin_required
+def set_afgerond(pid):
+    """Force a project's finished/running state, or hand it back to the rule."""
+    v = request.form.get("afgerond")
+    store.set_afgerond_manueel(pid, None if v not in ("0", "1") else int(v))
     return redirect(request.referrer or "/app")
 
 
@@ -185,12 +196,51 @@ def _taxonomy():
     return store.get_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY)
 
 
+def is_afgerond(s, now_ym=None, months_idle=None):
+    """Is this project finished?
+
+    Teamleader would be the natural source, but AWP keeps every project `open`
+    (187/187; filter.status=["closed"] returns nothing), so the automatic rule is
+    inactivity. Precedence, most authoritative first:
+      1. an explicit manual override set in the drawer
+      2. Teamleader's own status, the day AWP starts closing projects
+      3. no hour booked for `months_idle` months
+    """
+    man = s.get("afgerond_manueel")
+    if man is not None:
+        return bool(man)
+    if (s.get("status") or "").strip().lower() == "closed":
+        return True
+    if months_idle is None:
+        months_idle = store.get_config("afgerond_maanden", config.DEFAULT_AFGEROND_MAANDEN)
+    months = json.loads(s.get("activity_json") or "[]")
+    return calc.afgerond_from_activity(max(months) if months else None,
+                                       now_ym or time.strftime("%Y-%m", time.gmtime()),
+                                       int(months_idle))
+
+
+def _select_dossier(snaps, dossier):
+    """'lopend' / 'afgerond' / anything else = no filter."""
+    if dossier not in ("lopend", "afgerond"):
+        return snaps
+    now_ym = time.strftime("%Y-%m", time.gmtime())
+    idle = store.get_config("afgerond_maanden", config.DEFAULT_AFGEROND_MAANDEN)
+    want = (dossier == "afgerond")
+    return [s for s in snaps if is_afgerond(s, now_ym, idle) == want]
+
+
 def _filter_args():
     """The analyse filter, read once. Shared by the page and the export."""
     return (request.args.get("period") or "",
             request.args.get("from") or "",
             request.args.get("to") or "",
             [p for p in request.args.getlist("pids") if p])
+
+
+def _dossier_arg():
+    """'' | 'lopend' | 'afgerond' — orthogonal to the period/project selection."""
+    d = request.args.get("dossier") or ""
+    return d if d in ("lopend", "afgerond") else ""
 
 
 def _select_snapshots(snaps, period, d_from, d_to, pids):
@@ -286,7 +336,8 @@ def analyse():
     lang = get_lang()
     snaps = store.list_snapshots(architectuur_only=True)
     period, d_from, d_to, pids = _filter_args()
-    sel = _select_snapshots(snaps, period, d_from, d_to, pids)
+    dossier = _dossier_arg()
+    sel = _select_dossier(_select_snapshots(snaps, period, d_from, d_to, pids), dossier)
     agg = _aggregate_phases(sel, _taxonomy())
 
     # 1) Invoiced € vs quote budget € per phase (delta% above/below budget).
@@ -315,6 +366,7 @@ def analyse():
                 key=lambda x: -x[1])
 
     fstate = {"period": period, "from": d_from, "to": d_to, "pids": pids,
+              "dossier": dossier,
               "projects": [(s["project_id"], f'{s["project_key"] or ""} · {s["naam"] or ""}')
                            for s in snaps],
               "n_sel": len(sel)}
@@ -335,7 +387,7 @@ def analyse_export():
     from flask import send_file
 
     snaps = store.list_snapshots(architectuur_only=True)
-    sel = _select_snapshots(snaps, *_filter_args())
+    sel = _select_dossier(_select_snapshots(snaps, *_filter_args()), _dossier_arg())
     xs = components.xl_safe   # neutralise spreadsheet formula injection
 
     wb = Workbook()

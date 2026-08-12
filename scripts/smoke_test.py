@@ -355,6 +355,46 @@ assert body.index("Werfbezoeken") < body.index("Voortgang per fase"), \
 assert body.count("Werfbezoeken") == 1, "bloc werfbezoeken duplique"
 print("OK   werfbezoeken remontes au-dessus des fases")
 
+# --- feedback round 4: finished projects (lot 5) ---------------------------
+# Teamleader keeps all 187 AWP projects "open", so "afgerond" is derived from
+# inactivity. fx-new has activity THIS month; fx-old has activity 8 months ago.
+OLD_MONTH = time.strftime("%Y-%m", time.gmtime(time.time() - 250 * 86400))
+store.upsert_snapshot(dict(store.get_snapshot("fx-old"),
+                           activity_json=json.dumps([OLD_MONTH])))
+check("/app/analyse", 200, login=True, contains='name="dossier"')
+r = check("/app/analyse?dossier=afgerond", 200, login=True, contains="1 projecten in selectie")
+r = check("/app/analyse?dossier=lopend", 200, login=True, contains="3 projecten in selectie")
+print("OK   filtre lopend / afgerond sur l'analyse")
+
+# The manual override wins over the automatic rule, in both directions.
+r = client.post("/app/project/fx-old/afgerond", data={"afgerond": "0"})
+assert r.status_code in (302, 303)
+check("/app/analyse?dossier=afgerond", 200, login=True, contains="0 projecten in selectie")
+r = client.post("/app/project/fx-new/afgerond", data={"afgerond": "1"})
+assert r.status_code in (302, 303)
+check("/app/analyse?dossier=afgerond", 200, login=True, contains="1 projecten in selectie")
+# Back to automatic.
+client.post("/app/project/fx-old/afgerond", data={"afgerond": ""})
+client.post("/app/project/fx-new/afgerond", data={"afgerond": ""})
+check("/app/analyse?dossier=afgerond", 200, login=True, contains="1 projecten in selectie")
+print("OK   surcharge manuelle prioritaire, et retour a l'automatique")
+
+# The override must survive a sync, like the manual invoice does.
+client.post("/app/project/fx-old/afgerond", data={"afgerond": "0"})
+store.upsert_snapshot(dict(store.get_snapshot("fx-old"), naam="Oud (resync)"))
+assert store.get_snapshot("fx-old")["afgerond_manueel"] == 0, "la sync a ecrase la surcharge"
+client.post("/app/project/fx-old/afgerond", data={"afgerond": ""})
+print("OK   surcharge afgerond non ecrasee par la sync")
+
+# The export honours the same filter as the page.
+r = check("/app/analyse/export?dossier=afgerond", 200, needs_style=False, login=True, raw=True)
+assert r.get_data()[:2] == b"PK", "export cassé par le filtre dossier"
+# Non-admin cannot flip the flag.
+with client.session_transaction() as s:
+    s["uid"] = uid_plain
+assert client.post("/app/project/fx-old/afgerond", data={"afgerond": "1"}).status_code == 403
+print("OK   export filtre + surcharge reservee aux admins")
+
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 
 if failures:

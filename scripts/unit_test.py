@@ -241,6 +241,24 @@ close("A346 marge 'offerte - kost' = +25932.24 (= le champ margin de Teamleader)
 # --------------------------------------------------------------------------
 # 7. Cas limites — ce qui ne doit jamais lever
 # --------------------------------------------------------------------------
+print("\n--- afgeronde dossiers (lot 5) : detection par inactivite ---")
+eq("ecart de mois", calc.months_between("2026-05", "2026-08"), 3)
+eq("ecart a cheval sur l'annee", calc.months_between("2025-11", "2026-02"), 3)
+eq("mois identiques -> 0", calc.months_between("2026-08", "2026-08"), 0)
+eq("valeur invalide -> None", calc.months_between("bidon", "2026-08"), None)
+eq("3 mois d'inactivite -> afgerond",
+   calc.afgerond_from_activity("2026-05", "2026-08", 3), True)
+eq("2 mois d'inactivite -> encore lopend",
+   calc.afgerond_from_activity("2026-06", "2026-08", 3), False)
+eq("actif ce mois-ci -> lopend",
+   calc.afgerond_from_activity("2026-08", "2026-08", 3), False)
+# Un dossier sans la moindre heure n'est pas 'afgerond' : il n'a jamais commence.
+eq("aucune activite -> PAS afgerond (jamais commence)",
+   calc.afgerond_from_activity(None, "2026-08", 3), False)
+eq("liste vide -> PAS afgerond", calc.afgerond_from_activity("", "2026-08", 3), False)
+eq("seuil a 0 : tout dossier avec activite est afgerond",
+   calc.afgerond_from_activity("2026-08", "2026-08", 0), True)
+
 print("\n--- cas limites ---")
 eq("aucune fase -> statut 'none'", calc.project_summary([])["status"], "none")
 eq("aucune fase -> totaux a zero",

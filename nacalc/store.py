@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS project_snapshot (
   verantw_arch TEXT, verantw_medewerker TEXT, budget_klant REAL, offerte_awp REAL, raming_vo REAL,
   uren_begroot REAL, uren_gepresteerd REAL, effectieve_kost REAL, gefactureerd REAL,
   uren_begroot_gestart REAL, uren_gepresteerd_gestart REAL, gefactureerd_manueel REAL,
+  afgerond_manueel INTEGER,
   marge REAL, marge_pct REAL, project_type TEXT, activity_json TEXT,
   uren_per_persoon_json TEXT, kost_bron TEXT,
   summary_status TEXT, n_over INTEGER, n_warn INTEGER, cost_estimated INTEGER NOT NULL DEFAULT 0,
@@ -67,6 +68,7 @@ _MIGRATE_COLS = {
         ("uren_begroot_gestart", "REAL"),
         ("uren_gepresteerd_gestart", "REAL"),
         ("gefactureerd_manueel", "REAL"),
+        ("afgerond_manueel", "INTEGER"),
     ),
 }
 
@@ -217,6 +219,17 @@ def set_manual_invoiced(project_id, amount):
     with _conn() as c:
         c.execute("UPDATE project_snapshot SET gefactureerd_manueel=? WHERE project_id=?",
                   (None if amount is None else float(amount), project_id))
+
+
+def set_afgerond_manueel(project_id, value):
+    """Force a project's finished/running state. NULL = follow the automatic rule.
+
+    Same reasoning as set_manual_invoiced: user data, so it stays out of the
+    sync's column whitelist and survives every run.
+    """
+    with _conn() as c:
+        c.execute("UPDATE project_snapshot SET afgerond_manueel=? WHERE project_id=?",
+                  (None if value is None else int(value), project_id))
 
 
 def delete_snapshots_except(project_ids):

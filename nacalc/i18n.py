@@ -278,6 +278,16 @@ S = {
     # selectie op het projectoverzicht — feedback 2026-08
     "f_all_verantw": {"nl": "Alle verantwoordelijken", "en": "All owners"},
     "ov_sel_note": {"nl": "{n} van {total} projecten", "en": "{n} of {total} projects"},
+    # afgeronde dossiers — feedback 2026-08
+    "an_dossier_all": {"nl": "Alle dossiers", "en": "All projects"},
+    "an_dossier_lopend": {"nl": "Enkel lopende", "en": "Running only"},
+    "an_dossier_afgerond": {"nl": "Enkel afgeronde", "en": "Finished only"},
+    "dr_afgerond": {"nl": "Dossier", "en": "Project"},
+    "dr_afgerond_ja": {"nl": "Afgerond", "en": "Finished"},
+    "dr_afgerond_nee": {"nl": "Lopend", "en": "Running"},
+    "dr_afgerond_auto": {"nl": "Automatisch", "en": "Automatic"},
+    "dr_afgerond_hint": {"nl": "Automatisch = afgerond zodra er {n} maanden geen uren meer geboekt zijn. Teamleader houdt alle dossiers op 'open', dus dit is de enige beschikbare maatstaf.",
+                         "en": "Automatic = finished once no hours have been booked for {n} months. Teamleader keeps every project 'open', so this is the only available measure."},
 }
 
 

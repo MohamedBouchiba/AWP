@@ -193,6 +193,32 @@ def project_totals(phases):
     }
 
 
+def months_between(ym_a, ym_b):
+    """Whole months from 'YYYY-MM' a to b (b later -> positive). None on junk."""
+    try:
+        ya, ma = int(ym_a[:4]), int(ym_a[5:7])
+        yb, mb = int(ym_b[:4]), int(ym_b[5:7])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return (yb - ya) * 12 + (mb - ma)
+
+
+def afgerond_from_activity(last_active_ym, now_ym, months_idle):
+    """Is a project finished, judged only on when time was last booked on it?
+
+    AWP never closes projects in Teamleader -- all 187 are `status: open`, and
+    `filter.status = ["closed"]` returns nothing -- so "afgerond" cannot come
+    from Teamleader. The workable proxy is inactivity: nobody has booked an hour
+    on it for `months_idle` months.
+
+    A project with NO activity at all is NOT finished: it has never started.
+    """
+    if not last_active_ym:
+        return False
+    gap = months_between(last_active_ym, now_ym)
+    return gap is not None and gap >= months_idle
+
+
 def margin(basis_eur, kost_eur):
     """Marge = basis − effectieve kost, met pct t.o.v. de basis.
     Basis = gefactureerd (feedback ronde 2); voorheen de offerte."""

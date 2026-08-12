@@ -35,6 +35,12 @@ CURRENT_DATA_VERSION = 5
 # kept switchable from Beheer so the change is reversible without a redeploy.
 DEFAULT_STATUS_BASIS = "cost"
 
+# A project counts as "afgerond" after this many months without a single hour
+# booked on it. AWP keeps every project open in Teamleader (187/187 `open`,
+# and filter.status=["closed"] returns nothing), so inactivity is the only
+# signal available. Overridable per project in the drawer.
+DEFAULT_AFGEROND_MAANDEN = 3
+
 # Project custom-field labels we map to ids on first sync (Teamleader 'project' context).
 CF_LABELS = {
     "architectuur": "Architectuur",

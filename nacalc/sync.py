@@ -289,8 +289,12 @@ def run_full():
         saw_tl_costs = False
         failed = 0
         for item in items:
-            if item.get("status") != "open":
-                continue
+            # Closed projects used to be skipped here, and delete_snapshots_except
+            # then wiped them from the cache -- so a finished project, the one
+            # whose margin is finally definitive, disappeared for good. They are
+            # ingested now. Today this changes nothing (187/187 AWP projects are
+            # `open`; filter.status=["closed"] returns zero), but the day AWP
+            # starts closing them the history survives.
             try:
                 snap = _compute(item, mappings, thresholds, internal_rate, rates_map,
                                 taxonomy, basis)

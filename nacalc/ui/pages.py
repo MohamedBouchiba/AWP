@@ -271,7 +271,8 @@ def _per_person(lang, s, is_admin, user_names):
             f'<tbody>{body}</tbody></table>{cap_html}</div>')
 
 
-def render_drawer(lang, s, is_admin=False, user_names=None):
+def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
+                  afgerond_maanden=3):
     import json
     phases = json.loads(s["phases_json"] or "[]")
     chip_map = {"over": ("c-over", t("st_over", lang)), "warn": ("c-warn", t("st_warn", lang)),
@@ -344,6 +345,25 @@ def render_drawer(lang, s, is_admin=False, user_names=None):
     elif s.get("gefactureerd_manueel"):
         gef_extra = (f'<div class="mc-sub">{esc(t("dr_gef_manueel",lang))} '
                      f'{eur(s.get("gefactureerd_manueel"))}</div>')
+
+    # Finished / running. Automatic by inactivity, overridable per project --
+    # Teamleader keeps every AWP project "open", so there is nothing to read.
+    af_lab = t("dr_afgerond_ja" if afgerond else "dr_afgerond_nee", lang)
+    if is_admin:
+        cur = s.get("afgerond_manueel")
+        def _o(val, key):
+            v = "" if val is None else str(val)
+            return (f'<option value="{v}"'
+                    f'{" selected" if (cur if cur is None else int(cur)) == val else ""}>'
+                    f'{esc(t(key,lang))}</option>')
+        af_html = (
+            f'<form class="mc-inline" method="post" action="/app/project/{esc(s["project_id"])}/afgerond">'
+            f'<select name="afgerond" onchange="this.form.submit()">'
+            f'{_o(None, "dr_afgerond_auto")}{_o(1, "dr_afgerond_ja")}{_o(0, "dr_afgerond_nee")}'
+            f'</select></form>'
+            f'<div class="mc-sub">{esc(t("dr_afgerond_hint",lang).format(n=afgerond_maanden))}</div>')
+    else:
+        af_html = ""
     return f"""<div class="dr-head"><button class="x" onclick="closeDrawer()">×</button>
 <h2>{esc(s["project_key"] or "")} · {esc(s["naam"] or "")}</h2>
 <div class="m">{esc(s["adres"] or "")} &nbsp;•&nbsp; {esc(s["verantw_arch"] or "")}</div>
@@ -357,6 +377,7 @@ def render_drawer(lang, s, is_admin=False, user_names=None):
 <div class="mc"><div class="l">{esc(t('dr_uren_gestart',lang))}</div><div class="v">{h1(gp)} / {hb(bg)}</div>{uren_sub}</div>
 <div class="mc"><div class="l">{esc(t('dr_werfbezoek',lang))}</div><div class="v">{s["werfbezoeken"] or 0}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_bespreking',lang))}</div><div class="v">{s["besprekingen"] or 0}</div></div>
+<div class="mc"><div class="l">{esc(t('dr_afgerond',lang))}</div><div class="v">{esc(af_lab)}</div>{af_html}</div>
 <div class="mc"><div class="l">{esc(t('dr_kost',lang))}</div><div class="v">{kost_html}{est}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_marge',lang))}</div><div class="v" style="color:{marge_col}">{marge_html}</div></div>
 </div>
@@ -412,7 +433,15 @@ def render_analyse(lang, g1, g2, g3, g4, g5, g6, f):
           f'<div class="ms-panel" id="msPanel" hidden>'
           f'<input class="ms-search" type="text" oninput="msFilter(this.value)" placeholder="{esc(t("an_ms_placeholder",lang))}">'
           f'<div class="ms-list">{opts}</div></div></div>')
-    fbar = (f'<form class="filters" id="anForm" method="get" action="/app/analyse">{period_sel}'
+    # "Kan er bij de analyse ook gekeken worden welke dossiers afgerond zijn?"
+    # Orthogonal to the period/project selection: it narrows whatever they picked.
+    def dopt(val, key):
+        sel = " selected" if f.get("dossier", "") == val else ""
+        return f'<option value="{val}"{sel}>{esc(t(key,lang))}</option>'
+    dossier_sel = ('<select name="dossier" onchange="this.form.submit()">'
+                   + dopt("", "an_dossier_all") + dopt("lopend", "an_dossier_lopend")
+                   + dopt("afgerond", "an_dossier_afgerond") + '</select>')
+    fbar = (f'<form class="filters" id="anForm" method="get" action="/app/analyse">{period_sel}{dossier_sel}'
             f'<input type="month" id="fFrom" name="from" value="{esc(f["from"])}" title="{esc(t("an_from",lang))}" onchange="anRange()">'
             f'<input type="month" id="fTo" name="to" value="{esc(f["to"])}" title="{esc(t("an_to",lang))}" onchange="anRange()">'
             f'{ms}'
