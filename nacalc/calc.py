@@ -170,6 +170,16 @@ def project_summary(phases):
     """Strictest budget status over started, budgeted, non-overhead phases."""
     active = _rankable(phases)
     if not active:
+        # Nothing left to judge. Two very different situations hide here, and
+        # collapsing them into "Nog niet gestart" was wrong: on 26 of AWP's
+        # projects the ONLY started, budgeted phase is administratie, so
+        # excluding overhead emptied the rollup and declared live projects
+        # not started -- while their phase dot was red and the "enkel gestarte"
+        # filter still listed them.
+        # Overhead running on its own means the real work has not consumed any
+        # quoted budget yet, which is "op koers", not "not started".
+        if _active(phases):
+            return {"status": "ok", "n_over": 0, "n_warn": 0, "started_count": 0}
         return {"status": "none", "n_over": 0, "n_warn": 0, "started_count": 0}
     worst = "green"
     for p in active:

@@ -241,6 +241,35 @@ close("A346 marge 'offerte - kost' = +25932.24 (= le champ margin de Teamleader)
 # --------------------------------------------------------------------------
 # 7. Cas limites — ce qui ne doit jamais lever
 # --------------------------------------------------------------------------
+print("\n--- overhead SEUL : ne doit pas declarer le dossier 'non demarre' ---")
+# Cas reel : 26 dossiers AWP n'ont que l'administratie de demarree et budgetee.
+# Exclure l'overhead vidait le calcul et affichait "Nog niet gestart" alors que
+# la pastille de la fase etait rouge et que le dossier apparaissait comme gestart.
+ONLY_ADMIN = [
+    {"name": "1. ADMINISTRATIE", "budget_eur": 249.90, "spent_eur": 945.00,
+     "cost_eur": 945.00, "tracked_hours": 11.0, "budget_hours": 3.0},
+    {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 0.0,
+     "cost_eur": None, "tracked_hours": 0.0, "budget_hours": 100.0},
+]
+oa = calc.build_phases(ONLY_ADMIN, TH, phases.DEFAULT_TAXONOMY)
+eq("administratie a 378% ne rend plus le dossier 'over'",
+   calc.project_summary(oa)["status"], "ok")
+eq("... et surtout PAS 'nog niet gestart'",
+   calc.project_summary(oa)["status"] != "none", True)
+eq("aucune fase comptee en depassement", calc.project_summary(oa)["n_over"], 0)
+# Un dossier ou VRAIMENT rien n'a demarre doit rester 'none'.
+NOTHING = [{"name": "1. ADMINISTRATIE", "budget_eur": 249.90, "spent_eur": 0.0,
+            "cost_eur": None, "tracked_hours": 0.0, "budget_hours": 3.0}]
+eq("rien de demarre -> toujours 'none'",
+   calc.project_summary(calc.build_phases(NOTHING, TH, phases.DEFAULT_TAXONOMY))["status"],
+   "none")
+# Et une vraie fase en depassement doit toujours l'emporter.
+BOTH = ONLY_ADMIN + [{"name": "5. UITVOERINGSDOSSIER", "budget_eur": 1000.0,
+                      "spent_eur": 1500.0, "cost_eur": 1500.0,
+                      "tracked_hours": 20.0, "budget_hours": 10.0}]
+eq("une vraie fase en depassement reste prioritaire",
+   calc.project_summary(calc.build_phases(BOTH, TH, phases.DEFAULT_TAXONOMY))["status"], "over")
+
 print("\n--- afgeronde dossiers (lot 5) : detection par inactivite ---")
 eq("ecart de mois", calc.months_between("2026-05", "2026-08"), 3)
 eq("ecart a cheval sur l'annee", calc.months_between("2025-11", "2026-02"), 3)
