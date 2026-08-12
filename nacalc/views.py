@@ -129,7 +129,8 @@ def project_detail(pid):
     idle = store.get_config("afgerond_maanden", config.DEFAULT_AFGEROND_MAANDEN)
     return pages.render_drawer(get_lang(), s, is_admin=bool(u and u["is_admin"]),
                                user_names=names, afgerond=is_afgerond(s, months_idle=idle),
-                               afgerond_maanden=idle)
+                               afgerond_maanden=idle,
+                               thresholds=store.get_config('thresholds', config.DEFAULT_THRESHOLDS))
 
 
 @bp.post("/app/project/<pid>/gefactureerd")
@@ -255,7 +256,7 @@ def _apply_taxonomy(snaps, tx=None):
                 changed = True
         if not changed:
             continue
-        summ = calc.project_summary(ph)
+        summ = calc.project_summary(ph, store.get_config("thresholds", config.DEFAULT_THRESHOLDS))
         s["summary_status"] = summ["status"]
         s["n_over"] = summ["n_over"]
         s["n_warn"] = summ["n_warn"]

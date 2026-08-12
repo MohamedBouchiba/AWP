@@ -134,7 +134,7 @@ def _compute(item, mappings, thresholds, internal_rate, rates_map, taxonomy=None
             "budget_hours": TL.hours(g.get("time_estimated")) or qh.get(_norm(g.get("title")), 0)}
            for g in groups]
     phases = calc.build_phases(raw, thresholds, taxonomy, basis, internal_rate)
-    summary = calc.project_summary(phases)
+    summary = calc.project_summary(phases, thresholds)
     totals = calc.project_totals(phases)
 
     entries = TL.project_time_entries(pid)
@@ -261,10 +261,12 @@ def _make_meldingen(snap):
         # Meldingen page keeps nagging about exactly what the rollup ignores.
         if p.get("overhead") or not p.get("applicable"):
             continue
-        if p["started"] and p["color"] in ("amber", "red", "darkred"):
-            sev = p["color"]
+        # Alerts follow the HOURS, same measure as the project badge, so the
+        # Meldingen page can never contradict the label on the overview.
+        if p["started"] and p.get("uren_color") in ("amber", "red", "darkred"):
+            sev = p["uren_color"]
             store.upsert_melding(pid, snap["project_key"], snap["naam"], p["naam"],
-                                 sev, p["pct"], p["naam"],
+                                 sev, p["uren_pct"], p["naam"],
                                  verantw=snap.get("verantw_arch"))
             keep.add((p["naam"], sev))
     store.prune_meldingen(pid, keep)

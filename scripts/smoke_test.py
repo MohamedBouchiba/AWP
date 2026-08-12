@@ -658,6 +658,50 @@ r = check("/app", 200, login=True)
 assert "achterstallig" not in r.get_data(as_text=True), "retard signale a tort"
 print("OK   la pastille signale une sync en retard")
 
+# --- le statut suit les HEURES (regle Michiel) -----------------------------
+# Euros confortables, heures en depassement -> le badge doit dire "over budget".
+UREN = calc_mod.build_phases([
+    {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 1000.0, "cost_eur": 1000.0,
+     "tracked_hours": 132.0, "budget_hours": 100.0},
+    {"name": "4. BOUWAANVRAAG", "budget_eur": 10000.0, "spent_eur": 500.0, "cost_eur": 500.0,
+     "tracked_hours": 10.0, "budget_hours": 100.0},
+], cfg_mod.DEFAULT_THRESHOLDS, phases_mod.DEFAULT_TAXONOMY)
+_su = calc_mod.project_summary(UREN, cfg_mod.DEFAULT_THRESHOLDS)
+store.upsert_snapshot(dict(store.get_snapshot("fx-new"), project_id="fx-uren",
+                           project_key="A902", phases_json=json.dumps(UREN),
+                           summary_status=_su["status"], n_over=_su["n_over"],
+                           n_warn=_su["n_warn"], uren_begroot_gestart=200.0,
+                           uren_gepresteerd_gestart=142.0))
+r = client.get("/app")
+m = re.search(r'<tr class="row-(\w*)"[^>]*data-nr="A902"', r.get_data(as_text=True))
+assert m and m.group(1) == "over", \
+    f"le badge ne suit pas les heures (attendu over, obtenu {m.group(1) if m else None})"
+# ... alors que les euros sont a 10 % : la regle ignore bien les euros.
+assert {p["naam"]: p["pct"] for p in UREN}["3. VOORONTWERP"] == 10.0
+print("OK   le badge du dossier suit les heures, pas les euros")
+
+d = client.get("/app/project/fx-uren").get_data(as_text=True)
+assert "Over budget" in d, "le drawer ne reprend pas le statut heures"
+assert "Hoe wordt deze status bepaald?" in d, "pas de bulle d'info sur le statut"
+# Les pastilles sont sur l'apercu, pas dans le drawer.
+ovb = client.get("/app").get_data(as_text=True)
+assert "van de uren" in ovb and "van het budget in euro" in ovb, \
+    "l'infobulle des pastilles ne distingue pas uren et euro"
+print("OK   drawer : statut explique, pastilles distinguent uren et euro")
+
+# Les meldingen doivent suivre la meme mesure que le badge.
+store.set_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY)
+sync_mod._make_meldingen({"project_id": "fx-uren", "project_key": "A902", "naam": "Uren",
+                          "verantw_arch": "WB", "phases_json": json.dumps(UREN)})
+_ml = [m for m in store.list_meldingen() if m["project_id"] == "fx-uren"]
+assert len(_ml) == 1 and _ml[0]["phase_naam"] == "3. VOORONTWERP", \
+    f"les meldingen ne suivent pas les heures : {[(m['phase_naam'], m['severity']) for m in _ml]}"
+assert _ml[0]["pct"] == 132.0, f"la melding montre un % qui n'est pas celui des heures : {_ml[0]['pct']}"
+print("OK   les meldingen suivent les heures, comme le badge")
+
+# Seuils : le libelle doit dire qu'il s'agit des heures.
+check("/app/beheer", 200, login=True, contains="begrote uren")
+
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 
 if failures:

@@ -27,7 +27,9 @@ DEFAULT_SYNC_INTERVAL_MINUTES = int(os.environ.get("SYNC_INTERVAL_MINUTES", "60"
 #    overhead) so the analysis groups and the rollup skips overhead.
 # 5: per-phase % is based on kostprijs vs geofferteerd budget; phases carry
 #    verbruikt_eur/basis/kost_bron, snapshots carry the started-phase hours.
-CURRENT_DATA_VERSION = 5
+# 6: the project badge is driven by HOURS (Michiel, 2026-08-12); phases
+#    carry uren_pct / uren_color.
+CURRENT_DATA_VERSION = 6
 
 # Which numbers the per-phase percentage compares. "cost" = kostprijs bureau vs
 # geofferteerd budget (what AWP asked for); "spent" = Teamleader's

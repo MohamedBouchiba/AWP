@@ -205,10 +205,16 @@ eq("7. NAZORG : ni cout ni heures -> pct None", by_c["7. NAZORG"]["pct"], None)
 eq("3. VOORONTWERP : darkred -> amber", by_c["3. VOORONTWERP"]["color"], "amber")
 # ... mais le vrai depassement subsiste, on ne blanchit rien.
 eq("5. UITVOERINGSDOSSIER reste darkred", by_c["5. UITVOERINGSDOSSIER"]["color"], "darkred")
-summ_c = calc.project_summary(ph_c)
+eq("cote EUROS : 1 seule fase en depassement au lieu de 2",
+   sum(1 for p in ph_c if p["color"] in ("red", "darkred") and p["started"]
+       and p["applicable"] and not p["overhead"]), 1)
+eq("cote EUROS : 1 fase en 'dreigt over'",
+   sum(1 for p in ph_c if p["color"] == "amber" and p["started"]
+       and p["applicable"] and not p["overhead"]), 1)
+# Le BADGE, lui, suit les heures depuis la regle Michiel -- pas les euros.
+summ_c = calc.project_summary(ph_c, TH)
 eq("le projet reste 'over' (le depassement est reel)", summ_c["status"], "over")
-eq("1 seule fase en depassement au lieu de 2", summ_c["n_over"], 1)
-eq("1 fase en 'dreigt over'", summ_c["n_warn"], 1)
+eq("le badge est calcule sur les heures", summ_c["basis"], "uren")
 eq("verbruikt_eur porte le numerateur reellement utilise",
    by_c["5. UITVOERINGSDOSSIER"]["verbruikt_eur"], 14235.27)
 eq("source du cout tracee par fase", by_c["5. UITVOERINGSDOSSIER"]["kost_bron"], "teamleader")
@@ -241,6 +247,68 @@ close("A346 marge 'offerte - kost' = +25932.24 (= le champ margin de Teamleader)
 # --------------------------------------------------------------------------
 # 7. Cas limites — ce qui ne doit jamais lever
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# 5c. Le statut suit les HEURES (regle Michiel, 2026-08-12)
+# --------------------------------------------------------------------------
+print("\n--- statut sur les heures : le cas de Michiel ---")
+# "if a project is over budget in phase 1, you show the over budget label"
+MICHIEL = [
+    {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 5000.0, "cost_eur": 5000.0,
+     "tracked_hours": 132.0, "budget_hours": 100.0},     # fase terminee a 132%
+    {"name": "4. BOUWAANVRAAG", "budget_eur": 10000.0, "spent_eur": 500.0, "cost_eur": 500.0,
+     "tracked_hours": 10.0, "budget_hours": 100.0},      # fase active, 10%
+]
+mp = calc.build_phases(MICHIEL, TH, phases.DEFAULT_TAXONOMY)
+ms = calc.project_summary(mp, TH)
+eq("fase 3 : 132 % des heures", {p["naam"]: p["uren_pct"] for p in mp}["3. VOORONTWERP"], 132.0)
+eq("fase 4 : 10 % des heures", {p["naam"]: p["uren_pct"] for p in mp}["4. BOUWAANVRAAG"], 10.0)
+# cumul = 142 / 200 = 71 % -> vert. Mais la fase 3 terminee a 132 % conserve l'alerte.
+eq("cumul des deux fases = 71 %",
+   round((132.0 + 10.0) / (100.0 + 100.0) * 100, 1), 71.0)
+eq("le dossier reste 'over budget'", ms["status"], "over")
+eq("statut base sur les heures", ms["basis"], "uren")
+eq("pourcentage retenu = celui de la fase terminee", ms["uren_pct"], 132.0)
+
+print("\n--- le cumul seul fait aussi basculer ---")
+CUMUL = [
+    {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 100.0, "cost_eur": 100.0,
+     "tracked_hours": 95.0, "budget_hours": 100.0},      # terminee, 95 % -> orange
+    {"name": "4. BOUWAANVRAAG", "budget_eur": 10000.0, "spent_eur": 100.0, "cost_eur": 100.0,
+     "tracked_hours": 90.0, "budget_hours": 100.0},      # active, 90 % -> orange
+]
+cs = calc.project_summary(calc.build_phases(CUMUL, TH, phases.DEFAULT_TAXONOMY), TH)
+eq("cumul 185/200 = 92.5 % -> dreigt over", cs["status"], "warn")
+eq("pourcentage retenu = 95 % (la pire fase terminee)", cs["uren_pct"], 95.0)
+
+print("\n--- sous les seuils : le dossier est 'op koers' ---")
+OK_H = [
+    {"name": "3. VOORONTWERP", "budget_eur": 10000.0, "spent_eur": 9000.0, "cost_eur": 9000.0,
+     "tracked_hours": 40.0, "budget_hours": 100.0},
+    {"name": "4. BOUWAANVRAAG", "budget_eur": 10000.0, "spent_eur": 8000.0, "cost_eur": 8000.0,
+     "tracked_hours": 20.0, "budget_hours": 100.0},
+]
+oh = calc.build_phases(OK_H, TH, phases.DEFAULT_TAXONOMY)
+eq("heures a 30 % -> op koers", calc.project_summary(oh, TH)["status"], "ok")
+# ... alors que les EUROS seraient a 85 % (orange). Le badge suit bien les heures.
+eq("les euros disent 90 % mais ne pilotent plus le badge",
+   {p["naam"]: p["pct"] for p in oh}["3. VOORONTWERP"], 90.0)
+
+print("\n--- sans budget d'heures : repli sur les euros ---")
+NO_H = [{"name": "3. VOORONTWERP", "budget_eur": 1000.0, "spent_eur": 1500.0,
+         "cost_eur": 1500.0, "tracked_hours": 20.0, "budget_hours": 0.0}]
+nh = calc.project_summary(calc.build_phases(NO_H, TH, phases.DEFAULT_TAXONOMY), TH)
+eq("aucun budget d'heures -> on garde le signal euro", nh["status"], "over")
+eq("et on le signale", nh["basis"], "euro")
+
+print("\n--- A346 sur la nouvelle regle ---")
+a346 = calc.build_phases(A346, TH, phases.DEFAULT_TAXONOMY)
+a_s = calc.project_summary(a346, TH)
+# cumul = 667.2 / 658.7 = 101.3 % ; pire fase terminee = UITVOERINGSDOSSIER 246.9 %
+eq("A346 reste 'over budget'", a_s["status"], "over")
+close("pourcentage retenu = 246.9 % (UITVOERINGSDOSSIER)", a_s["uren_pct"], 246.9, tol=0.2)
+eq("2 fases au-dessus des heures budgetees", a_s["n_over"], 2)
+eq("0 fase en 'dreigt over'", a_s["n_warn"], 0)
+
 print("\n--- overhead SEUL : ne doit pas declarer le dossier 'non demarre' ---")
 # Cas reel : 26 dossiers AWP n'ont que l'administratie de demarree et budgetee.
 # Exclure l'overhead vidait le calcul et affichait "Nog niet gestart" alors que

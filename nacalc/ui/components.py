@@ -103,19 +103,31 @@ def xl_safe(v):
     return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
 
 def _dot(p):
+    # The dot colour follows the HOURS, the same measure as the project badge and
+    # as n_over. Leaving it on the euro ratio would have shown green dots next to
+    # a "2 fasen over budget" label -- the breakdown has to agree with the badge
+    # it breaks down. Phases with no time budget keep the euro colour, otherwise
+    # they would lose their signal entirely.
+    kleur = p.get("uren_color") if (p.get("budget_hours") or 0) > 0 else None
+    kleur = kleur or p["color"]
     if not p["applicable"]:
         cls = "c-none"
     elif not p["started"]:
         cls = "c-todo"
     else:
-        cls = {"green": "c-good", "amber": "c-warn", "red": "c-over", "darkred": "c-crit"}.get(p["color"], "c-good")
+        cls = {"green": "c-good", "amber": "c-warn", "red": "c-over",
+               "darkred": "c-crit"}.get(kleur, "c-good")
     state = {"done": "st-done", "progress": "st-progress"}.get(p["glyph"], "")
     if p["applicable"] and p["started"]:
-        # The percentage is a BUDGET ratio in euros, not an hours ratio. Putting
-        # it in brackets right after the hours read as "133.9% of those hours",
-        # which is wrong and was one source of the client's confusion.
-        title = (f'{p["naam"]} — {uren_txt(p["tracked_hours"], p["budget_hours"])}'
-                 f' · {p["pct"]}% van het budget')
+        # Spell out which number is which. It used to read "158.9/120.5u
+        # (133.9%)", where the percentage was a EURO ratio -- it looked like a
+        # percentage of those hours, and that is very likely part of why A346 was
+        # misread in the first place.
+        title = f'{p["naam"]} — {uren_txt(p["tracked_hours"], p["budget_hours"])}'
+        if p.get("uren_pct") is not None:
+            title += f' = {p["uren_pct"]}% van de uren'
+        if p.get("pct") is not None:
+            title += f' · {p["pct"]}% van het budget in euro'
         if p.get("overhead"):
             title += " · overhead, telt niet mee in de status"
     elif not p["applicable"]:

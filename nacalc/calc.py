@@ -7,6 +7,7 @@ Per-phase status is driven by Teamleader's per-group MONEY fields:
   the 'Costs on projects' permission hides them).
 Color = budget status; glyph = progress.
 """
+from . import config                 # constants only -- no IO
 from . import phases as phases_mod   # pure module too -- no IO, no cycle
 
 SEVERITY_ORDER = ["green", "amber", "red", "darkred"]
@@ -123,6 +124,11 @@ def build_phases(raw_phases, thresholds, taxonomy=None, basis=DEFAULT_BASIS,
             "basis": basis,
             "verbruikt_eur": _money_or_none(verbruikt),
             "pct": pct,
+            # Hours ratio, alongside the euro ratio. Gated on budget_hours (a
+            # TIME budget), deliberately not on `applicable`, which tests the
+            # euro budget -- a phase can have one without the other.
+            "uren_pct": round(th / bh * 100, 1) if bh > 0 else None,
+            "uren_color": color_for(round(th / bh * 100, 1) if bh > 0 else None, thresholds),
             "color": color_for(pct, thresholds),
             "applicable": applicable,
             "started": started,
@@ -166,8 +172,37 @@ def _rankable(phases):
     return [p for p in _active(phases) if not p.get("overhead")]
 
 
-def project_summary(phases):
-    """Strictest budget status over started, budgeted, non-overhead phases."""
+def _uren_pct(p):
+    """Hours worked over hours budgeted, or None when there is no time budget.
+
+    Recomputed rather than read from the stored `uren_pct`, so snapshots written
+    before this field existed still produce a correct status.
+    """
+    bh = p.get("budget_hours") or 0
+    if not bh:
+        return None
+    return round((p.get("tracked_hours") or 0) / bh * 100, 1)
+
+
+def project_summary(phases, thresholds=None):
+    """Project status, driven by HOURS worked against hours budgeted.
+
+    Client rule (Michiel, 2026-08-12): the project label follows the hours, not
+    the euros. Two measures, and the worst one wins:
+
+      cumul  Σ tracked / Σ budgeted over the started, budgeted, non-overhead
+             phases — "previous + active phases" taken together;
+      fini   the worst hours ratio among the phases already FINISHED, so a phase
+             that blew its budget keeps the project flagged after it closes.
+
+    The per-phase euro percentage (cost vs quoted budget) is untouched: it still
+    drives the phase dots, the drawer and both analyses. Only the project badge
+    moved to hours.
+
+    Note the 115% threshold never affected this badge and still does not — red
+    and darkred both collapse into "over" below; 115% only colours a phase dot.
+    """
+    thresholds = thresholds or config.DEFAULT_THRESHOLDS
     active = _rankable(phases)
     if not active:
         # Nothing left to judge. Two very different situations hide here, and
@@ -179,17 +214,42 @@ def project_summary(phases):
         # Overhead running on its own means the real work has not consumed any
         # quoted budget yet, which is "op koers", not "not started".
         if _active(phases):
-            return {"status": "ok", "n_over": 0, "n_warn": 0, "started_count": 0}
-        return {"status": "none", "n_over": 0, "n_warn": 0, "started_count": 0}
-    worst = "green"
-    for p in active:
-        if SEVERITY_ORDER.index(p["color"]) > SEVERITY_ORDER.index(worst):
-            worst = p["color"]
-    n_over = sum(1 for p in active if p["color"] in ("red", "darkred"))
-    n_warn = sum(1 for p in active if p["color"] == "amber")
+            return {"status": "ok", "n_over": 0, "n_warn": 0, "started_count": 0,
+                    "uren_pct": None, "basis": "overhead"}
+        return {"status": "none", "n_over": 0, "n_warn": 0, "started_count": 0,
+                "uren_pct": None, "basis": None}
+    # Only phases that actually carry a time budget can be judged on hours;
+    # including the others would add worked hours with nothing to divide by.
+    timed = [p for p in active if (p.get("budget_hours") or 0) > 0]
+    if not timed:
+        # No hours information at all. Rather than report a flattering "op
+        # koers", fall back to the euro rollup so the project keeps a signal.
+        worst = "green"
+        for p in active:
+            if SEVERITY_ORDER.index(p["color"]) > SEVERITY_ORDER.index(worst):
+                worst = p["color"]
+        return {"status": ("over" if worst in ("red", "darkred")
+                           else "warn" if worst == "amber" else "ok"),
+                "n_over": sum(1 for p in active if p["color"] in ("red", "darkred")),
+                "n_warn": sum(1 for p in active if p["color"] == "amber"),
+                "started_count": len(active), "uren_pct": None, "basis": "euro"}
+
+    budg = sum(p.get("budget_hours") or 0 for p in timed)
+    trak = sum(p.get("tracked_hours") or 0 for p in timed)
+    cumul = round(trak / budg * 100, 1) if budg > 0 else None
+    fini = max((_uren_pct(p) for p in timed if p.get("glyph") == "done"),
+               default=None)
+    worst_pct = max([x for x in (cumul, fini) if x is not None], default=None)
+    worst = color_for(worst_pct, thresholds)
+    # Counts follow the same measure as the badge, so "2 fasen over budget"
+    # cannot contradict the label above it. Derived here rather than read from
+    # uren_color, so a snapshot written before this rule existed still works.
+    cols = [color_for(_uren_pct(p), thresholds) for p in timed]
+    n_over = sum(1 for c in cols if c in ("red", "darkred"))
+    n_warn = sum(1 for c in cols if c == "amber")
     status = "over" if worst in ("red", "darkred") else ("warn" if worst == "amber" else "ok")
     return {"status": status, "n_over": n_over, "n_warn": n_warn,
-            "started_count": len(active)}
+            "started_count": len(timed), "uren_pct": worst_pct, "basis": "uren"}
 
 
 def project_totals(phases):

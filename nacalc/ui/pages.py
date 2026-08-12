@@ -278,12 +278,19 @@ def _per_person(lang, s, is_admin, user_names):
 
 
 def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
-                  afgerond_maanden=3):
+                  afgerond_maanden=3, thresholds=None):
     import json
     phases = json.loads(s["phases_json"] or "[]")
     chip_map = {"over": ("c-over", t("st_over", lang)), "warn": ("c-warn", t("st_warn", lang)),
                 "ok": ("c-ok", t("st_ok", lang)), "none": ("", t("st_notstarted", lang))}
     chipcls, chiptx = chip_map.get(s["summary_status"], ("", ""))
+    # Say plainly which numbers decide this badge: it follows the HOURS, while
+    # the per-phase bars below stay in euros.
+    _th = thresholds or {"amber": 80, "red": 100}
+    status_info = info_bubble(t("dr_status_title", lang), [
+        ("ok", t("dr_status_r1", lang)),
+        ("ok", t("dr_status_r2", lang)),
+    ], t("dr_status_note", lang).format(a=_th.get("amber", 80), r=_th.get("red", 100)))
     fase_rows = []
     for p in phases:
         if not p["applicable"]:
@@ -403,7 +410,7 @@ def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
 <h2>{esc(s["project_key"] or "")} · {esc(s["naam"] or "")}</h2>
 <div class="m">{esc(s["adres"] or "")} &nbsp;•&nbsp; {esc(s["verantw_arch"] or "")}</div>
 <div style="margin-top:10px;display:flex;gap:8px;align-items:center"><span class="tag">{esc(s["categorie"] or "—")}</span>
-<span class="tag">{esc(s["contracttype"] or "—")}</span><span class="status-chip {chipcls}" style="font-weight:700;font-size:12px;padding:4px 10px;border-radius:20px">● {esc(chiptx)}</span></div></div>
+<span class="tag">{esc(s["contracttype"] or "—")}</span><span class="status-chip {chipcls}" style="font-weight:700;font-size:12px;padding:4px 10px;border-radius:20px">● {esc(chiptx)}</span>{status_info}</div></div>
 <div class="dr-body"><div class="meta-grid">
 <div class="mc"><div class="l">{esc(t('dr_budget_klant',lang))}</div><div class="v">{eur(s["budget_klant"])}</div></div>
 <div class="mc"><div class="l">{esc(t('dr_raming',lang))}</div><div class="v">{eur(s["raming_vo"])}</div></div>
@@ -770,6 +777,7 @@ def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
 <button class="btn" style="margin-top:14px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button></form></div>
 {person_rates}
 <div class="be-card"><h2>{esc(t('be_thresholds',lang))}</h2>
+<p class="panel-s">{esc(t('be_thresholds_hint',lang))}</p>
 <form method="post" action="/app/beheer"><input type="hidden" name="form" value="thresholds">
 <div class="be-row">amber ≥ <input name="amber" type="number" value="{th['amber']}" style="width:80px"> %
 &nbsp; red &gt; <input name="red" type="number" value="{th['red']}" style="width:80px"> %
