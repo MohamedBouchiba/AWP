@@ -53,23 +53,31 @@ def now_iso():
 
 # Columns added after the first production deploy. CREATE TABLE IF NOT EXISTS
 # won't touch an existing table, so add them idempotently on every boot.
-_MIGRATE_SNAPSHOT_COLS = (
-    ("gefactureerd", "REAL"),
-    ("project_type", "TEXT"),
-    ("activity_json", "TEXT"),
-    ("uren_per_persoon_json", "TEXT"),
-    ("kost_bron", "TEXT"),
-)
+# Keyed by table: the /data volume outlives every deploy, so ANY table can need
+# a column added later -- not just project_snapshot.
+# Never remove an entry here: a volume restored from an old backup still needs it.
+_MIGRATE_COLS = {
+    "project_snapshot": (
+        ("gefactureerd", "REAL"),
+        ("project_type", "TEXT"),
+        ("activity_json", "TEXT"),
+        ("uren_per_persoon_json", "TEXT"),
+        ("kost_bron", "TEXT"),
+    ),
+}
 
 
 def init_db():
     with _conn() as c:
         c.executescript(_SCHEMA)
         c.execute("INSERT OR IGNORE INTO sync_state(id, running) VALUES (1, 0)")
-        existing = {r["name"] for r in c.execute("PRAGMA table_info(project_snapshot)")}
-        for col, typ in _MIGRATE_SNAPSHOT_COLS:
-            if col not in existing:
-                c.execute(f"ALTER TABLE project_snapshot ADD COLUMN {col} {typ}")
+        for table, cols in _MIGRATE_COLS.items():
+            existing = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+            if not existing:
+                continue          # table not created yet -> _SCHEMA already has it
+            for col, typ in cols:
+                if col not in existing:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
     _seed_default_config()
 
 
