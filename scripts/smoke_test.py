@@ -439,6 +439,83 @@ print("OK   Analyse 2 : filtres partages + export xlsx protege")
 # Both analyses reachable from the sidebar.
 check("/app", 200, login=True, contains='href="/app/analyse2"')
 
+# --- feedback round 4: alert emails (lot 7) --------------------------------
+# "wel geen spam per tijdregistratie, dus er moet een manier zijn om deze
+# mailing te dempen als er een analyse van het budget/timing is gebeurd"
+from nacalc import mailer as mailer_mod   # noqa: E402
+
+OVER = calc_mod.build_phases([
+    {"name": "3. VOORONTWERP", "budget_eur": 1000.0, "spent_eur": 1500.0, "cost_eur": 1500.0,
+     "tracked_hours": 20.0, "budget_hours": 10.0},
+    {"name": "4. BOUWAANVRAAG", "budget_eur": 1000.0, "spent_eur": 900.0, "cost_eur": 900.0,
+     "tracked_hours": 12.0, "budget_hours": 10.0},
+], cfg_mod.DEFAULT_THRESHOLDS, phases_mod.DEFAULT_TAXONOMY)
+SNAP_OVER = {"project_id": "fx-mail", "project_key": "A500", "naam": "Mail",
+             "verantw_arch": "WB", "phases_json": json.dumps(OVER)}
+
+# 1. The persistence fix: a repeated sync must NOT resurrect a read alert.
+sync_mod._make_meldingen(SNAP_OVER)
+assert store.count_unseen_meldingen() == 2, "2 meldingen attendues (over + dreigt over)"
+store.mark_meldingen_seen()
+sync_mod._make_meldingen(SNAP_OVER)          # the hourly sync runs again
+assert store.count_unseen_meldingen() == 0, \
+    "la sync a recree les meldingen -> le badge repasse en rouge toutes les heures"
+print("OK   une re-sync ne ressuscite pas une melding deja lue")
+
+# 2. A phase dropping back below threshold removes only its own alert.
+BETTER = calc_mod.build_phases([
+    {"name": "3. VOORONTWERP", "budget_eur": 1000.0, "spent_eur": 1500.0, "cost_eur": 1500.0,
+     "tracked_hours": 20.0, "budget_hours": 10.0},
+    {"name": "4. BOUWAANVRAAG", "budget_eur": 1000.0, "spent_eur": 100.0, "cost_eur": 100.0,
+     "tracked_hours": 2.0, "budget_hours": 10.0},
+], cfg_mod.DEFAULT_THRESHOLDS, phases_mod.DEFAULT_TAXONOMY)
+sync_mod._make_meldingen(dict(SNAP_OVER, phases_json=json.dumps(BETTER)))
+kept = [m for m in store.list_meldingen() if m["project_id"] == "fx-mail"]
+assert len(kept) == 1 and kept[0]["phase_naam"] == "3. VOORONTWERP", \
+    f"purge incorrecte des meldingen retombees: {[m['phase_naam'] for m in kept]}"
+print("OK   une fase repassee sous le seuil perd sa melding, les autres restent")
+
+# 3. THE anti-spam guarantee: three syncs in a row -> exactly one email.
+sync_mod._make_meldingen(SNAP_OVER)
+os.environ.update(SMTP_HOST="smtp.test", SMTP_FROM="dash@awpburo.be", MAIL_DRY_RUN="1")
+store.set_config("verantw_emails", {"WB": "wb@awpburo.be"})
+assert mailer_mod.is_configured() and mailer_mod.is_dry_run()
+n1 = sync_mod.send_digests()
+n2 = sync_mod.send_digests()
+n3 = sync_mod.send_digests()
+assert (n1, n2, n3) == (1, 0, 0), f"attendu 1 seul envoi, obtenu {(n1, n2, n3)}"
+print("OK   3 syncs consecutives = 1 seul mail (groupe par verantwoordelijke)")
+
+# 4. Snooze stops the mail without hiding the alert.
+store.mark_notified([m["id"] for m in store.list_meldingen()], "2000-01-01T00:00:00Z")
+r = client.post("/app/meldingen/snooze", data={"project_id": "fx-mail", "days": "14"})
+assert r.status_code in (302, 303)
+assert "fx-mail" in store.snoozed_projects(), "snooze non enregistre"
+assert sync_mod.send_digests() == 0, "un projet dempte a quand meme envoye un mail"
+assert any(m["project_id"] == "fx-mail" for m in store.list_meldingen()), \
+    "le snooze a fait disparaitre la melding de la page"
+check("/app/meldingen", 200, login=True, contains="Gedempt")
+print("OK   snooze : plus de mail, melding toujours visible")
+
+# 5. No address for that owner -> no mail, and notified_at stays untouched so
+#    nothing is silently swallowed once the address is filled in.
+store.set_config("verantw_emails", {})
+store.mark_notified([m["id"] for m in store.list_meldingen()], "2000-01-01T00:00:00Z")
+store.snooze_project("fx-mail", "2000-01-01T00:00:00Z")     # expire the snooze
+assert sync_mod.send_digests() == 0, "mail envoye sans adresse connue"
+store.set_config("verantw_emails", {"WB": "wb@awpburo.be"})
+assert sync_mod.send_digests() == 1, "le mail ne part pas une fois l'adresse remplie"
+print("OK   sans adresse : rien n'est envoye ni perdu")
+
+# 6. Not configured -> feature inert, and Beheer says so.
+for k in ("SMTP_HOST", "SMTP_FROM"):
+    os.environ.pop(k, None)
+assert not mailer_mod.is_configured()
+assert sync_mod.send_digests() == 0, "envoi tente sans configuration SMTP"
+check("/app/beheer", 200, login=True, contains="Niet geconfigureerd")
+check("/app/beheer", 200, login=True, contains='name="form" value="mail"')
+print("OK   sans SMTP : fonctionnalite inerte et signalee en Beheer")
+
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 
 if failures:

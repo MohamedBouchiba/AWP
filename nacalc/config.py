@@ -41,6 +41,9 @@ DEFAULT_STATUS_BASIS = "cost"
 # signal available. Overridable per project in the drawer.
 DEFAULT_AFGEROND_MAANDEN = 3
 
+# How long a "budget reviewed, stop reminding me" mute lasts.
+DEFAULT_SNOOZE_DAGEN = 14
+
 # Project custom-field labels we map to ids on first sync (Teamleader 'project' context).
 CF_LABELS = {
     "architectuur": "Architectuur",

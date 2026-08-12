@@ -32,8 +32,10 @@ CREATE TABLE IF NOT EXISTS project_snapshot (
 CREATE TABLE IF NOT EXISTS meldingen (
   id INTEGER PRIMARY KEY, project_id TEXT NOT NULL, project_key TEXT, naam TEXT,
   phase_naam TEXT, severity TEXT NOT NULL, pct REAL, message TEXT, created_at TEXT NOT NULL,
-  seen INTEGER NOT NULL DEFAULT 0,
+  seen INTEGER NOT NULL DEFAULT 0, verantw TEXT, notified_at TEXT,
   UNIQUE(project_id, phase_naam, severity));
+CREATE TABLE IF NOT EXISTS melding_snooze (
+  project_id TEXT PRIMARY KEY, until_at TEXT NOT NULL, by_user TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sync_state (
   id INTEGER PRIMARY KEY CHECK(id=1), last_run_at TEXT, last_ok_at TEXT,
   running INTEGER NOT NULL DEFAULT 0, last_error TEXT, projects_synced INTEGER DEFAULT 0);
@@ -69,6 +71,10 @@ _MIGRATE_COLS = {
         ("uren_gepresteerd_gestart", "REAL"),
         ("gefactureerd_manueel", "REAL"),
         ("afgerond_manueel", "INTEGER"),
+    ),
+    "meldingen": (
+        ("verantw", "TEXT"),
+        ("notified_at", "TEXT"),
     ),
 }
 
@@ -257,19 +263,83 @@ def get_snapshot(project_id):
 
 
 # ---------- meldingen ----------
-def upsert_melding(project_id, project_key, naam, phase_naam, severity, pct, message):
+def upsert_melding(project_id, project_key, naam, phase_naam, severity, pct, message,
+                   verantw=None):
+    """Insert an alert, or refresh an existing one WITHOUT resetting its state.
+
+    created_at, seen and notified_at are deliberately left alone on conflict:
+    they are what makes "this alert is not new" and "we already emailed about
+    it" knowable. The old code deleted every alert of a project before
+    re-inserting, so created_at was always "now", `seen` reset to 0 on every
+    hourly sync (the badge was permanently red), and any email keyed off these
+    rows would have fired once per phase per hour.
+    """
     with _conn() as c:
         c.execute(
-            "INSERT INTO meldingen(project_id,project_key,naam,phase_naam,severity,pct,message,created_at,seen)"
-            " VALUES(?,?,?,?,?,?,?,?,0)"
+            "INSERT INTO meldingen(project_id,project_key,naam,phase_naam,severity,pct,message,created_at,seen,verantw)"
+            " VALUES(?,?,?,?,?,?,?,?,0,?)"
             " ON CONFLICT(project_id,phase_naam,severity) DO UPDATE SET"
-            " pct=excluded.pct, message=excluded.message, created_at=excluded.created_at",
-            (project_id, project_key, naam, phase_naam, severity, pct, message, now_iso()))
+            " pct=excluded.pct, message=excluded.message, project_key=excluded.project_key,"
+            " naam=excluded.naam, verantw=excluded.verantw",
+            (project_id, project_key, naam, phase_naam, severity, pct, message, now_iso(),
+             verantw))
 
 
-def clear_meldingen_for(project_id):
+def prune_meldingen(project_id, keep):
+    """Drop a project's alerts that no longer apply. `keep` = {(phase, severity)}.
+
+    Replaces the old clear-everything-then-reinsert: rows that still apply are
+    left untouched, so their created_at / seen / notified_at survive.
+    """
     with _conn() as c:
-        c.execute("DELETE FROM meldingen WHERE project_id=?", (project_id,))
+        rows = c.execute("SELECT id, phase_naam, severity FROM meldingen WHERE project_id=?",
+                         (project_id,)).fetchall()
+        gone = [r["id"] for r in rows if (r["phase_naam"], r["severity"]) not in keep]
+        if gone:
+            q = ",".join("?" * len(gone))
+            c.execute(f"DELETE FROM meldingen WHERE id IN ({q})", gone)
+
+
+# ---------- alert notifications ----------
+def snooze_project(project_id, until_at, by_user=None):
+    """Mute a project's alert emails until a date. The Meldingen page offers it
+    so a budget review silences the reminders instead of people ignoring them."""
+    with _conn() as c:
+        c.execute("INSERT INTO melding_snooze(project_id,until_at,by_user,created_at)"
+                  " VALUES(?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET"
+                  " until_at=excluded.until_at, by_user=excluded.by_user,"
+                  " created_at=excluded.created_at",
+                  (project_id, until_at, by_user, now_iso()))
+
+
+def snoozed_projects(now=None):
+    now = now or now_iso()
+    with _conn() as c:
+        return {r["project_id"] for r in
+                c.execute("SELECT project_id FROM melding_snooze WHERE until_at > ?",
+                          (now,)).fetchall()}
+
+
+def meldingen_to_notify(not_since):
+    """Alerts never emailed, or last emailed before `not_since` (an ISO stamp).
+
+    The daily cap lives here rather than in the mailer, so a crash mid-send can
+    never turn into a second round of emails for the same alerts.
+    """
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM meldingen WHERE notified_at IS NULL OR notified_at < ?"
+            " ORDER BY (severity='darkred') DESC, (severity='red') DESC, pct DESC",
+            (not_since,)).fetchall()]
+
+
+def mark_notified(ids, when=None):
+    if not ids:
+        return
+    with _conn() as c:
+        q = ",".join("?" * len(ids))
+        c.execute(f"UPDATE meldingen SET notified_at=? WHERE id IN ({q})",
+                  [when or now_iso()] + list(ids))
 
 
 def list_meldingen():

@@ -321,6 +321,23 @@ S = {
                 "en": "Same calculation as above, grouped by contract type."},
     "q5_tip": {"nl": "Offerte {basis} − kost {cost} = {marge} · {n} dossiers",
                "en": "Quote {basis} − cost {cost} = {marge} · {n} projects"},
+    # meldingen per mail — feedback 2026-08
+    "ml_snooze": {"nl": "Dempen", "en": "Mute"},
+    "ml_snoozed": {"nl": "Gedempt", "en": "Muted"},
+    "ml_snooze_tip": {"nl": "Stopt de herinneringsmails voor dit dossier gedurende {n} dagen. De melding blijft hier gewoon staan.",
+                      "en": "Stops the reminder emails for this project for {n} days. The alert itself stays listed here."},
+    "be_mail_title": {"nl": "Meldingen per e-mail", "en": "Alerts by email"},
+    "be_mail_hint": {"nl": "Eén samenvattende mail per verantwoordelijke, hoogstens één keer per dag — nooit een mail per tijdregistratie. Wie geen adres heeft in de lijst hieronder, krijgt niets.",
+                     "en": "One summary email per owner, at most once a day — never one per time entry. Anyone without an address in the list below receives nothing."},
+    "be_mail_off": {"nl": "Niet geconfigureerd (SMTP_HOST / SMTP_FROM ontbreken) — er wordt niets verstuurd.",
+                    "en": "Not configured (SMTP_HOST / SMTP_FROM missing) — nothing is sent."},
+    "be_mail_dry": {"nl": "Testmodus (MAIL_DRY_RUN=1): mails worden enkel gelogd, niet verstuurd. Zet de variabele op 0 om echt te versturen.",
+                    "en": "Test mode (MAIL_DRY_RUN=1): emails are logged only, never sent. Set the variable to 0 to send for real."},
+    "be_mail_live": {"nl": "Actief — mails vertrekken van {from}.", "en": "Active — mail is sent from {from}."},
+    "be_mail_map": {"nl": "Adressen per verantwoordelijke (één per lijn: naam = e-mail)",
+                    "en": "Addresses per owner (one per line: name = email)"},
+    "be_mail_map_hint": {"nl": "De naam is de waarde van het veld '1. Verantw.' in Teamleader. Teamleader geeft daar geen e-mailadres bij, dus die koppeling maak je hier.",
+                         "en": "The name is the value of the '1. Verantw.' field in Teamleader. Teamleader attaches no email address to it, so the mapping is made here."},
 }
 
 

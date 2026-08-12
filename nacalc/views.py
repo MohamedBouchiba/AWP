@@ -5,7 +5,7 @@ import time
 
 from flask import (Blueprint, request, redirect, session, jsonify, make_response)
 
-from . import store, auth, sync, config, calc, phases as phases_mod
+from . import store, auth, sync, config, calc, mailer, phases as phases_mod
 from .ui import pages, components
 from .i18n import t, pick_lang
 
@@ -156,8 +156,31 @@ def meldingen():
     lang = get_lang()
     items = store.list_meldingen()
     store.mark_meldingen_seen()
-    content = pages.render_meldingen(lang, items)
+    content = pages.render_meldingen(lang, items, snoozed=store.snoozed_projects(),
+                                     snooze_days=config.DEFAULT_SNOOZE_DAGEN)
     return render_page("meldingen", t("nav_meldingen", lang), t("ml_sub", lang), content)
+
+
+@bp.post("/app/meldingen/snooze")
+@auth.login_required
+def snooze_melding():
+    """Mute a project's alert emails after a budget review.
+
+    "er moet een manier zijn om deze mailing te dempen als er een analyse van
+    het budget/timing is gebeurd" -- the alerts stay visible on the page, only
+    the emails stop.
+    """
+    pid = (request.form.get("project_id") or "").strip()
+    try:
+        days = max(1, min(365, int(request.form.get("days") or config.DEFAULT_SNOOZE_DAGEN)))
+    except ValueError:
+        days = config.DEFAULT_SNOOZE_DAGEN
+    if pid:
+        u = auth.current_user()
+        until = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                              time.gmtime(time.time() + days * 86400))
+        store.snooze_project(pid, until, (u or {}).get("email"))
+    return redirect(request.referrer or "/app/meldingen")
 
 
 # ---------- analyse ----------
@@ -590,6 +613,17 @@ def beheer():
                              if u.get("id") == uid), uid)
                 store.add_cost_rate(uid, naam, rate, eff)
                 sync.trigger_sync()  # recompute fallback costs with the new rate
+        elif form == "mail":
+            mapping = {}
+            for line in (request.form.get("emails") or "").splitlines():
+                if "=" not in line:
+                    continue
+                naam, addr = (x.strip() for x in line.split("=", 1))
+                # An owner with no address simply gets no mail; storing the blank
+                # keeps their line visible in the form instead of losing it.
+                if naam and ("@" in addr or not addr):
+                    mapping[naam] = addr
+            store.set_config("verantw_emails", mapping)
         elif form == "basis":
             b = request.form.get("status_basis")
             if b in (config.DEFAULT_STATUS_BASIS, "cost", "spent"):
@@ -650,5 +684,10 @@ def beheer():
                                   taxonomy=tx, seen_keys=seen_keys,
                                   suggestions=phases_mod.suggest_aliases(seen_names, tx),
                                   basis=store.get_config("status_basis",
-                                                         config.DEFAULT_STATUS_BASIS))
+                                                         config.DEFAULT_STATUS_BASIS),
+                                  mail_status=mailer.status(),
+                                  verantw_emails=store.get_config("verantw_emails", {}),
+                                  verantws=sorted({s["verantw_arch"] for s in
+                                                   store.list_snapshots(architectuur_only=False)
+                                                   if s["verantw_arch"]}))
     return render_page("beheer", t("be_title", lang), "", content)

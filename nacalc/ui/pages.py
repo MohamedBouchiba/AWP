@@ -387,18 +387,29 @@ def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
 <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">{esc(basis_note)} {esc(t('ph_caption',lang))}</div>{note}
 {pp_html}</div>"""
 
-def render_meldingen(lang, items):
+def render_meldingen(lang, items, snoozed=None, snooze_days=14):
     if not items:
         return f'<p class="panel-s" style="margin-bottom:18px">{esc(t("ml_sub",lang))}</p><div class="card" style="padding:30px;text-align:center;color:var(--muted)">{esc(t("ml_empty",lang))}</div>'
+    snoozed = snoozed or set()
     out = [f'<p class="panel-s" style="margin-bottom:18px">{esc(t("ml_sub",lang))}</p>']
     for m in items:
         over = m["severity"] in ("red", "darkred")
         col = "var(--red)" if over else "var(--amber)"
+        # Snooze is per PROJECT and stops the emails only -- the alert stays on
+        # this page, so nothing is hidden from whoever is reading it.
+        if m["project_id"] in snoozed:
+            mute = f'<span class="ml-muted">🔕 {esc(t("ml_snoozed",lang))}</span>'
+        else:
+            mute = (f'<form method="post" action="/app/meldingen/snooze" class="ml-snooze">'
+                    f'<input type="hidden" name="project_id" value="{esc(m["project_id"])}">'
+                    f'<input type="hidden" name="days" value="{snooze_days}">'
+                    f'<button class="btn" type="submit" title="{esc(t("ml_snooze_tip",lang).format(n=snooze_days))}">'
+                    f'🔕 {esc(t("ml_snooze",lang))}</button></form>')
         out.append(
             f'<div class="alert"><div class="ai {"ai-over" if over else "ai-warn"}">{"🔴" if over else "🟠"}</div>'
             f'<div><div class="at">{esc(m["project_key"] or "")} · {esc(m["naam"] or "")} — {esc(t("ml_phase",lang))} {esc(m["phase_naam"] or "")}</div>'
             f'<div class="ad">{esc(t("ml_over",lang) if over else t("ml_warn",lang))} · {m["pct"]}%</div></div>'
-            f'<div class="ax"><div class="pct" style="color:{col}">{m["pct"]}%</div>'
+            f'<div class="ax"><div class="pct" style="color:{col}">{m["pct"]}%</div>{mute}'
             f'<button class="btn" onclick="openDrawer(\'{m["project_id"]}\')">{esc(t("ml_view",lang))} →</button></div></div>')
     return "".join(out)
 
@@ -640,9 +651,34 @@ def _basis_card(lang, basis):
 </form></div>"""
 
 
+def _mail_card(lang, mail_status, verantw_emails, verantws):
+    configured, dry, frm = mail_status
+    if not configured:
+        state = f'<p class="panel-s" style="color:var(--red)">{esc(t("be_mail_off",lang))}</p>'
+    elif dry:
+        state = f'<p class="panel-s" style="color:var(--amber)">{esc(t("be_mail_dry",lang))}</p>'
+    else:
+        state = f'<p class="panel-s" style="color:var(--green)">{esc(t("be_mail_live",lang).format(**{"from": frm}))}</p>'
+    # Pre-fill every owner Teamleader actually uses, so nobody is silently
+    # missed just because their line was never typed.
+    known = {k.strip(): v for k, v in (verantw_emails or {}).items()}
+    for v in (verantws or []):
+        known.setdefault(v, "")
+    txt = "\n".join(f"{k} = {v}" for k, v in sorted(known.items()) if k)
+    return f"""<div class="be-card"><h2>{esc(t('be_mail_title',lang))}</h2>
+<p class="panel-s">{esc(t('be_mail_hint',lang))}</p>{state}
+<form method="post" action="/app/beheer"><input type="hidden" name="form" value="mail">
+<div class="be-ph-lab">{esc(t('be_mail_map',lang))}</div>
+<div class="be-ph-hint">{esc(t('be_mail_map_hint',lang))}</div>
+<textarea name="emails" rows="6" class="be-ph-ta">{esc(txt)}</textarea>
+<button class="btn" style="margin-top:12px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button>
+</form></div>"""
+
+
 def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
                   has_tl_costs=None, tl_users=None, cost_rates=None,
-                  taxonomy=None, seen_keys=None, suggestions=None, basis="cost"):
+                  taxonomy=None, seen_keys=None, suggestions=None, basis="cost",
+                  mail_status=(False, True, ""), verantw_emails=None, verantws=None):
     msg = f'<div class="savemsg">{esc(t("be_saved",lang))}</div>' if saved else ""
     user_rows = "".join(
         f'<div class="be-row"><span class="nm">{esc(u["naam"] or u["email"])}</span>'
@@ -688,6 +724,7 @@ def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
 <button class="btn" style="margin-top:8px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button></form></div>
 {_basis_card(lang, basis)}
 {_phase_card(lang, taxonomy, seen_keys, suggestions)}
+{_mail_card(lang, mail_status, verantw_emails, verantws)}
 <div class="be-card"><h2>{esc(t('be_users',lang))}</h2>{user_rows}
 <form method="post" action="/app/beheer" style="margin-top:14px"><input type="hidden" name="form" value="adduser">
 <div class="be-row"><input name="naam" placeholder="Naam" required><input name="email" type="email" placeholder="E-mail" required>

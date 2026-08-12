@@ -2,11 +2,12 @@
 SQLite, raise meldingen. Runs in a background thread + on a manual trigger.
 The dashboard only ever reads the cache."""
 import json
+import os
 import re
 import threading
 import time
 
-from . import config, store, teamleader as TL, calc, phases as phases_mod
+from . import config, store, teamleader as TL, calc, mailer, phases as phases_mod
 
 _trigger = threading.Event()
 _thread = None
@@ -246,8 +247,13 @@ def _compute(item, mappings, thresholds, internal_rate, rates_map, taxonomy=None
 
 
 def _make_meldingen(snap):
+    """Refresh a project's alerts, PRESERVING the state of the ones that persist.
+
+    Used to be clear-all-then-reinsert, which reset `seen` (and would reset any
+    "already emailed" marker) on every hourly run -- see store.upsert_melding.
+    """
     pid = snap["project_id"]
-    store.clear_meldingen_for(pid)
+    keep = set()
     for p in json.loads(snap["phases_json"]):
         # Same exclusions as calc._rankable: an overhead phase (administratie)
         # or an unbudgeted one must not raise an alert either, otherwise the
@@ -257,7 +263,70 @@ def _make_meldingen(snap):
         if p["started"] and p["color"] in ("amber", "red", "darkred"):
             sev = p["color"]
             store.upsert_melding(pid, snap["project_key"], snap["naam"], p["naam"],
-                                 sev, p["pct"], p["naam"])
+                                 sev, p["pct"], p["naam"],
+                                 verantw=snap.get("verantw_arch"))
+            keep.add((p["naam"], sev))
+    store.prune_meldingen(pid, keep)
+
+
+def _digest_body(lang, rows):
+    lines = []
+    cur = None
+    for m in rows:
+        key = f'{m["project_key"] or ""} · {m["naam"] or ""}'
+        if key != cur:
+            lines.append(f"\n{key}")
+            cur = key
+        state = "OVER BUDGET" if m["severity"] in ("red", "darkred") else "dreigt over"
+        lines.append(f"   - {m['phase_naam']}: {state} ({m['pct']}%)")
+    return "\n".join(lines).strip()
+
+
+def send_digests(now_iso_str=None):
+    """One digest per responsible, at most once a day. Returns #mails sent.
+
+    The client's constraint was explicit: "wel geen spam per tijdregistratie,
+    dus er moet een manier zijn om deze mailing te dempen als er een analyse van
+    het budget/timing is gebeurd." Three independent guards:
+      1. an alert is only ever mailed once per 24h (notified_at, set in the DB
+         BEFORE the next run can pick it up again);
+      2. alerts are grouped into a single mail per responsible, so a project
+         with eight drifting phases is one message, not eight;
+      3. a project can be snoozed from the Meldingen page after a budget review.
+    """
+    if not mailer.is_configured():
+        return 0
+    now = now_iso_str or store.now_iso()
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                           time.gmtime(time.time() - 24 * 3600))
+    rows = store.meldingen_to_notify(cutoff)
+    if not rows:
+        return 0
+    snoozed = store.snoozed_projects(now)
+    emails = {k.strip().lower(): v for k, v in
+              (store.get_config("verantw_emails", {}) or {}).items()}
+
+    by_person = {}
+    for m in rows:
+        if m["project_id"] in snoozed:
+            continue
+        addr = emails.get((m.get("verantw") or "").strip().lower())
+        if not addr:
+            continue          # nobody to send to -> leave notified_at untouched
+        by_person.setdefault(addr, []).append(m)
+
+    sent = 0
+    for addr, items in by_person.items():
+        body = (f"{_digest_body('nl', items)}\n\n"
+                f"Details: {os.environ.get('APP_URL', 'https://awp-dashboard.up.railway.app')}/app/meldingen\n")
+        subject = f"[AWP nacalculatie] {len(items)} fase(s) over of dreigend over budget"
+        ok, _detail = mailer.send(addr, subject, body)
+        if ok:
+            # Marked immediately: a crash further down must never cause a second
+            # mail about the same alerts.
+            store.mark_notified([m["id"] for m in items], now)
+            sent += 1
+    return sent
 
 
 def run_full():
@@ -329,6 +398,12 @@ def run_full():
             # run leaves data_version stale on purpose -> it retries.
             store.set_config("data_version", config.CURRENT_DATA_VERSION)
         store.set_sync_state(last_ok_at=store.now_iso(), projects_synced=count)
+        try:
+            # After the cache is consistent, never during. Isolated: a mail
+            # problem must not mark the whole sync as failed.
+            send_digests()
+        except Exception:
+            pass
     except Exception as e:
         store.set_sync_state(last_error=str(e)[:300])
     finally:
