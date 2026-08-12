@@ -15,6 +15,7 @@ S = {
     "sidebar_toggle": {"nl": "Menu in-/uitklappen", "en": "Collapse / expand menu"},
     "synced": {"nl": "Teamleader gesynct", "en": "Teamleader synced"},
     "never_synced": {"nl": "Nog niet gesynct", "en": "Not synced yet"},
+    "sync_stale": {"nl": "Sync {n}u achterstallig", "en": "Sync {n}h behind"},
     "syncing": {"nl": "Bezig met synchroniseren…", "en": "Syncing…"},
     "sync_now": {"nl": "Sync nu", "en": "Sync now"},
     # overzicht

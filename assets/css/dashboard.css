@@ -22,7 +22,12 @@ a{color:inherit;text-decoration:none}
 .top{background:var(--panel);border-bottom:1px solid var(--line);padding:16px 28px;display:flex;align-items:center;gap:16px;position:sticky;top:0;z-index:5}
 .top h1{font-size:18px;margin:0;font-weight:700}.top .sub{font-size:12px;color:var(--muted);margin-top:2px}.top .spacer{flex:1}
 .pill{display:inline-flex;align-items:center;gap:6px;background:var(--grey-bg);color:var(--muted);border:1px solid var(--line);padding:6px 11px;border-radius:8px;font-size:12px;font-weight:600}
-.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
+.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}
+.pill.stale{background:var(--amber-bg);border-color:var(--amber);color:var(--amber)}
+.pill.stale .dot{background:var(--amber)}
+.pill.busy .dot{background:var(--amber);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@media(prefers-reduced-motion:reduce){.pill.busy .dot{animation:none}}
 .btn{font:inherit;font-weight:700;font-size:12px;border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 13px;cursor:pointer;color:var(--accent)}
 .content{padding:24px 28px 60px}
 .filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:18px}
@@ -218,3 +223,59 @@ table.pp tbody tr:last-child td{border-bottom:none}
 .be-adv summary::before{content:"▸ ";font-size:11px}
 .be-adv[open] summary::before{content:"▾ "}
 @media(max-width:1100px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.side{display:none}}
+
+/* ============================================================
+   Afwerking — focus, hover, diepte. Alles hieronder is additief:
+   het verfijnt bestaande componenten zonder ze te herdefiniëren.
+   ============================================================ */
+
+/* 1. Toetsenbordfocus. Stond alleen op de filtervelden, waardoor de rest van de
+      app onbruikbaar was zonder muis en er onafgewerkt uitzag bij het tabben. */
+:where(a,button,summary,[tabindex]):focus-visible,
+.chk:focus-within,.ph-i:focus-within,.ms-opt:focus-within{
+  outline:2px solid var(--accent);outline-offset:2px;border-radius:8px}
+.nav a:focus-visible{outline-color:#fff;outline-offset:-2px}
+input[type=checkbox]:focus-visible,input[type=radio]:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px}
+tbody tr:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+
+/* 2. Knoppen hadden geen enkele hover- of actieve staat. */
+.btn{transition:background .13s,border-color .13s,color .13s,transform .06s}
+.btn:hover{background:var(--grey-bg);border-color:var(--grey)}
+.btn:active{transform:translateY(1px)}
+.btn[style*="var(--accent)"]:hover{filter:brightness(.94);background:var(--accent)}
+.btn-exp:hover{filter:brightness(.94)}
+
+/* 3. De sticky tabelkop zweefde zonder scheiding: rijen schoven er hard onder. */
+.tablewrap{scrollbar-width:thin;scrollbar-color:var(--grey) transparent}
+.tablewrap::-webkit-scrollbar{width:10px;height:10px}
+.tablewrap::-webkit-scrollbar-thumb{background:var(--grey);border-radius:20px;border:3px solid var(--panel)}
+.tablewrap::-webkit-scrollbar-track{background:transparent}
+thead th{box-shadow:0 1px 0 var(--line),0 4px 10px -8px rgba(20,30,50,.35)}
+
+/* 4. Consistente overgangen op wat aanklikbaar is. */
+.nav a,.pkey,.st-ic,.marge-chip,.ph-i,.ms-opt,.alert{transition:background .13s,border-color .13s,color .13s}
+.kpi,.card,.be-card{transition:box-shadow .15s}
+
+/* 5. Detailpaneel: dezelfde scrollbar, en een sluitknop die reageert. */
+.drawer{scrollbar-width:thin;scrollbar-color:var(--grey) transparent}
+.drawer::-webkit-scrollbar{width:10px}
+.drawer::-webkit-scrollbar-thumb{background:var(--grey);border-radius:20px;border:3px solid var(--panel)}
+.dr-head .x{transition:background .13s,color .13s}
+.dr-head .x:hover{background:var(--grey-bg);color:var(--ink)}
+
+/* 6. Meldingen: de kaart mag laten zien dat ze aanklikbaar is. */
+.alert:hover{border-color:var(--grey)}
+
+/* 7. Kleine afwerkingen. */
+::selection{background:rgba(47,109,240,.18)}
+.mc{transition:border-color .13s}
+.foot-note{font-size:11.5px;color:var(--muted);margin-top:12px;line-height:1.5}
+.state{text-align:center;padding:56px 20px;color:var(--muted)}
+.state h3{margin:0 0 6px;color:var(--ink);font-size:16px}
+
+/* 8. Beweging is een keuze, geen gegeven. */
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important;scroll-behavior:auto!important}
+}

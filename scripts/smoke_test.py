@@ -631,6 +631,33 @@ assert "% van het budget" in client.get("/app").get_data(as_text=True), \
     "l'infobulle des pastilles ne precise pas que le % porte sur le budget"
 print("OK   plus de slash orphelin (apercu, fiches) et infobulle des pastilles corrigee")
 
+# --- robustesse de la synchronisation --------------------------------------
+# Vu en production : le conteneur redemarre pendant une sync, `running` reste a 1
+# et run_full() sort immediatement pour toujours -> le cache gele en silence.
+store.set_sync_state(running=1, last_run_at=store.now_iso())
+store.init_db()                       # = ce que fait un demarrage de processus
+assert store.get_sync_state()["running"] == 0, \
+    "un demarrage ne remet pas le drapeau 'running' a zero"
+print("OK   un redemarrage debloque une sync interrompue")
+
+# Et si le drapeau se coince malgre tout, un run trop vieux est considere mort.
+store.set_sync_state(running=1, last_run_at="2020-01-01T00:00:00Z")
+assert sync_mod._age_minutes("2020-01-01T00:00:00Z") > sync_mod.STALE_RUN_MINUTES
+store.set_sync_state(running=1, last_run_at=store.now_iso())
+assert sync_mod._age_minutes(store.now_iso()) < 1, "l'age d'une sync fraiche est faux"
+assert sync_mod._age_minutes("pas une date") is None, "date invalide non geree"
+store.set_sync_state(running=0)
+print("OK   garde-fou d'anciennete sur les syncs bloquees")
+
+# La pastille doit dire quand les donnees sont en retard, pas juste une heure.
+store.set_sync_state(last_ok_at="2020-01-01T00:00:00Z", last_error=None)
+r = check("/app", 200, login=True, contains="achterstallig")
+assert 'class="pill stale"' in r.get_data(as_text=True), "la pastille ne signale pas le retard"
+store.set_sync_state(last_ok_at=store.now_iso())
+r = check("/app", 200, login=True)
+assert "achterstallig" not in r.get_data(as_text=True), "retard signale a tort"
+print("OK   la pastille signale une sync en retard")
+
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 
 if failures:

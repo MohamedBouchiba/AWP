@@ -23,7 +23,8 @@ def _load_css(name):
 STYLE = "<style>" + _load_css("dashboard.css") + "</style>"
 
 
-def shell(lang, active, title, sub, content, badge, synced_text, syncing, is_admin, collapsed=False):
+def shell(lang, active, title, sub, content, badge, synced_text, syncing, is_admin,
+          collapsed=False, stale=False, sync_tip=""):
     collapsed_cls = " collapsed" if collapsed else ""
 
     def navitem(view, key, icon, extra=""):
@@ -36,9 +37,12 @@ def shell(lang, active, title, sub, content, badge, synced_text, syncing, is_adm
     on_nl = "on" if lang == "nl" else ""
     on_en = "on" if lang == "en" else ""
     if syncing:
-        pill = f'<span class="pill" id="syncPill"><span class="dot" style="background:var(--amber)"></span> {esc(t("syncing",lang))}</span>'
+        pill = (f'<span class="pill busy" id="syncPill" title="{esc(sync_tip)}">'
+                f'<span class="dot"></span> {esc(t("syncing",lang))}</span>')
     else:
-        pill = f'<span class="pill" id="syncPill"><span class="dot"></span> {esc(synced_text)}</span>'
+        cls = " stale" if stale else ""
+        pill = (f'<span class="pill{cls}" id="syncPill" title="{esc(sync_tip)}">'
+                f'<span class="dot"></span> {esc(synced_text)}</span>')
 
     def _mob(view, key, extra=""):
         cls = "active" if active == view else ""

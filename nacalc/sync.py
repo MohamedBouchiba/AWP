@@ -1,6 +1,7 @@
 """Sync engine: pull from Teamleader, compute per-project snapshots, cache in
 SQLite, raise meldingen. Runs in a background thread + on a manual trigger.
 The dashboard only ever reads the cache."""
+import calendar
 import json
 import os
 import re
@@ -329,9 +330,35 @@ def send_digests(now_iso_str=None):
     return sent
 
 
+def _age_minutes(iso):
+    """Minutes since an ISO stamp written by store.now_iso(), or None.
+
+    calendar.timegm, not time.mktime: the stamps are UTC (store.now_iso uses
+    gmtime) while mktime reads a struct_time as LOCAL time, which put the age
+    an hour or two out depending on daylight saving.
+    """
+    try:
+        return (time.time() - calendar.timegm(
+            time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ"))) / 60
+    except (TypeError, ValueError):
+        return None
+
+
+# A run cannot legitimately last this long: gunicorn is pinned to one worker, so
+# anything older is a corpse left by a killed process, not a live sync.
+STALE_RUN_MINUTES = 45
+
+
 def run_full():
-    if store.get_sync_state().get("running"):
-        return
+    st = store.get_sync_state()
+    if st.get("running"):
+        age = _age_minutes(st.get("last_run_at") or "")
+        if age is None or age < STALE_RUN_MINUTES:
+            return
+        # Second line of defence behind the boot-time reset in store.init_db():
+        # without it a single killed process froze the cache permanently, since
+        # every later call returned right here.
+        store.set_sync_state(last_error="vorige sync afgebroken — opnieuw gestart")
     store.set_sync_state(running=1, last_run_at=store.now_iso(), last_error=None)
     count = 0
     try:

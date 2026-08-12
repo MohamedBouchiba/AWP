@@ -26,14 +26,23 @@ def render_page(active, title, sub, content):
     lang = get_lang()
     u = auth.current_user()
     ss = store.get_sync_state()
+    # Surface staleness: the pill used to show a time with no hint that it was
+    # hours old, so a sync that had stopped running looked exactly like one that
+    # had just finished.
+    age = sync._age_minutes(ss.get("last_ok_at") or "")
+    stale = age is not None and age > 3 * 60
     if ss.get("last_ok_at"):
         synced = f"{t('synced', lang)} · {ss['last_ok_at'][11:16]}"
+        if stale:
+            synced = t("sync_stale", lang).format(n=int(age // 60))
     else:
         synced = t("never_synced", lang)
+    tip = ss.get("last_error") or (ss.get("last_ok_at") or "")
     badge = store.count_unseen_meldingen()
     collapsed = request.cookies.get("sidebar") == "collapsed"
     return pages.shell(lang, active, title, sub, content, badge, synced,
-                           ss.get("running"), bool(u and u["is_admin"]), collapsed)
+                           ss.get("running"), bool(u and u["is_admin"]), collapsed,
+                           stale=stale, sync_tip=tip)
 
 
 # ---------- auth ----------

@@ -83,6 +83,13 @@ def init_db():
     with _conn() as c:
         c.executescript(_SCHEMA)
         c.execute("INSERT OR IGNORE INTO sync_state(id, running) VALUES (1, 0)")
+        # A fresh process cannot have a sync in flight. run_full() clears
+        # `running` only in its finally block, so a deploy or a crash mid-sync
+        # leaves it stuck at 1 -- and every later run_full() returns immediately,
+        # silently freezing the cache for good. Seen in production: the flag sat
+        # at 1 for hours across several deploys, and nothing synced any more.
+        # Safe because the Procfile pins gunicorn to a single worker.
+        c.execute("UPDATE sync_state SET running=0 WHERE id=1")
         for table, cols in _MIGRATE_COLS.items():
             existing = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
             if not existing:
