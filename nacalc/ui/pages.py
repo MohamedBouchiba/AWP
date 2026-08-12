@@ -45,7 +45,8 @@ def shell(lang, active, title, sub, content, badge, synced_text, syncing, is_adm
         return f'<a class="{cls}" href="/app/{view}">{esc(t(key,lang))}{extra}</a>'
     mob_badge = f' <span class="badge">{badge}</span>' if badge else ""
     mobnav = (f'<nav class="mobnav">{_mob("overzicht","nav_overzicht")}{_mob("meldingen","nav_meldingen",mob_badge)}'
-              f'{_mob("analyse","nav_analyse")}{(_mob("beheer","nav_beheer") if is_admin else "")}</nav>')
+              f'{_mob("analyse","nav_analyse")}{_mob("analyse2","nav_analyse2")}'
+              f'{(_mob("beheer","nav_beheer") if is_admin else "")}</nav>')
     return f"""<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AWP Buro — {esc(t('app_name',lang))}</title>{STYLE}</head><body>
@@ -57,6 +58,7 @@ def shell(lang, active, title, sub, content, badge, synced_text, syncing, is_adm
     {navitem("overzicht","nav_overzicht","▦")}
     {navitem("meldingen","nav_meldingen","◔", badge_html)}
     {navitem("analyse","nav_analyse","▥")}
+    {navitem("analyse2","nav_analyse2","◫")}
     {beheer}
   </nav>
   <div class="side-foot">
@@ -400,19 +402,14 @@ def render_meldingen(lang, items):
             f'<button class="btn" onclick="openDrawer(\'{m["project_id"]}\')">{esc(t("ml_view",lang))} →</button></div></div>')
     return "".join(out)
 
-def render_analyse(lang, g1, g2, g3, g4, g5, g6, f):
-    """Six graphs over the selected projects (period or explicit selection).
-    g1 (naam, billed, budget, delta_pct, n) · g2 (naam, tracked, budget_h, pct, n)
-    g3/g4/g6 (naam, marge, billed, cost, n) · g5 (naam, avg_h, n) · f = filter state."""
-    def panel(tk, sk, ik, inner, empty_key="an_empty"):
-        empty = f'<p class="panel-s">{esc(t(empty_key,lang))}</p>'
-        return (f'<div class="card" style="padding:20px 22px"><p class="panel-t">{esc(t(tk,lang))}'
-                f'<span class="pinfo" title="{esc(t(ik,lang))}">i</span></p>'
-                f'<p class="panel-s">{esc(t(sk,lang))}</p>{inner or empty}</div>')
+def _analyse_filterbar(lang, f, action):
+    """The shared analysis filter bar, aimed at `action` (and `action`/export).
 
-    # --- filter bar. Period / custom range / project selection are mutually
-    # exclusive: the JS below clears the others, and _select_snapshots enforces
-    # the same precedence server-side.
+    Period / custom range / project selection are mutually exclusive: the JS in
+    _analyse_filterjs clears the others, and _select_snapshots enforces the same
+    precedence server-side. The dossier (lopend/afgerond) filter is orthogonal —
+    it narrows whatever was picked.
+    """
     def opt(val, key):
         sel = " selected" if f["period"] == val else ""
         return f'<option value="{val}"{sel}>{esc(t(key,lang))}</option>'
@@ -420,6 +417,13 @@ def render_analyse(lang, g1, g2, g3, g4, g5, g6, f):
                   + opt("", "an_period_all") + opt("1", "an_period_1")
                   + opt("3", "an_period_3") + opt("6", "an_period_6") + opt("12", "an_period_12")
                   + opt("custom", "an_period_custom") + '</select>')
+
+    def dopt(val, key):
+        sel = " selected" if f.get("dossier", "") == val else ""
+        return f'<option value="{val}"{sel}>{esc(t(key,lang))}</option>'
+    dossier_sel = ('<select name="dossier" onchange="this.form.submit()">'
+                   + dopt("", "an_dossier_all") + dopt("lopend", "an_dossier_lopend")
+                   + dopt("afgerond", "an_dossier_afgerond") + '</select>')
     # Self-contained searchable multi-select (no library). Search only HIDES
     # options, never removes them, so a checked-but-filtered project still submits.
     opts = "".join(
@@ -433,25 +437,20 @@ def render_analyse(lang, g1, g2, g3, g4, g5, g6, f):
           f'<div class="ms-panel" id="msPanel" hidden>'
           f'<input class="ms-search" type="text" oninput="msFilter(this.value)" placeholder="{esc(t("an_ms_placeholder",lang))}">'
           f'<div class="ms-list">{opts}</div></div></div>')
-    # "Kan er bij de analyse ook gekeken worden welke dossiers afgerond zijn?"
-    # Orthogonal to the period/project selection: it narrows whatever they picked.
-    def dopt(val, key):
-        sel = " selected" if f.get("dossier", "") == val else ""
-        return f'<option value="{val}"{sel}>{esc(t(key,lang))}</option>'
-    dossier_sel = ('<select name="dossier" onchange="this.form.submit()">'
-                   + dopt("", "an_dossier_all") + dopt("lopend", "an_dossier_lopend")
-                   + dopt("afgerond", "an_dossier_afgerond") + '</select>')
-    fbar = (f'<form class="filters" id="anForm" method="get" action="/app/analyse">{period_sel}{dossier_sel}'
+    return (f'<form class="filters" id="anForm" method="get" action="{action}">{period_sel}{dossier_sel}'
             f'<input type="month" id="fFrom" name="from" value="{esc(f["from"])}" title="{esc(t("an_from",lang))}" onchange="anRange()">'
             f'<input type="month" id="fTo" name="to" value="{esc(f["to"])}" title="{esc(t("an_to",lang))}" onchange="anRange()">'
             f'{ms}'
             f'<button class="btn" type="submit" style="height:40px">{esc(t("an_apply",lang))}</button>'
-            f'<a class="btn" href="/app/analyse" style="height:40px;display:inline-flex;align-items:center">{esc(t("an_reset",lang))}</a>'
+            f'<a class="btn" href="{action}" style="height:40px;display:inline-flex;align-items:center">{esc(t("an_reset",lang))}</a>'
             f'<span class="pill type-pill">{esc(t("an_sel_note",lang).format(n=f["n_sel"]))}</span>'
-            f'<button class="btn btn-exp" type="submit" formaction="/app/analyse/export">⤓ {esc(t("an_export",lang))}</button>'
+            f'<button class="btn btn-exp" type="submit" formaction="{action}/export">⤓ {esc(t("an_export",lang))}</button>'
             f'</form>')
+
+
+def _analyse_filterjs(lang):
     ms_count_tpl = t("an_ms_count", lang).replace("{n}", "__N__")
-    fjs = f"""<script>
+    return f"""<script>
 function msToggle(e){{var p=document.getElementById('msPanel');p.hidden=!p.hidden;if(e)e.stopPropagation();}}
 function msFilter(q){{q=(q||'').toLowerCase();
 document.querySelectorAll('#msPanel .ms-opt').forEach(function(o){{o.style.display=(!q||(o.dataset.lbl||'').indexOf(q)>=0)?'':'none';}});}}
@@ -474,6 +473,74 @@ document.addEventListener('click',function(e){{var m=document.getElementById('ms
 if(m&&!m.contains(e.target)){{document.getElementById('msPanel').hidden=true;}}}});
 msSync();
 </script>"""
+
+
+def _an_panel(lang, tk, sk, ik, inner, empty_key="an_empty"):
+    empty = f'<p class="panel-s">{esc(t(empty_key,lang))}</p>'
+    return (f'<div class="card" style="padding:20px 22px"><p class="panel-t">{esc(t(tk,lang))}'
+            f'<span class="pinfo" title="{esc(t(ik,lang))}">i</span></p>'
+            f'<p class="panel-s">{esc(t(sk,lang))}</p>{inner or empty}</div>')
+
+
+def render_analyse2(lang, q1, q2, q3, q4, q5, f):
+    """Analyse 2 — geofferteerd vs kostprijs bureau, zonder facturatie.
+
+    The client: "Alles waarbij we een gefactureerde vergelijken met iets anders
+    is op vandaag nog niet super relevant, want niet alles liep hiermee. Het kan
+    dat we tussentijds eerder moeten werken met een analyse 2 die geofferteerde
+    vs budget/effectieve kost uitwerkt. Deze kan dan later wegvallen."
+
+    So this page is a deliberate parallel to /app/analyse, reusing its filter
+    bar, aggregation and export machinery — only the projections differ. When
+    Teamleader invoicing is complete it can be dropped by deleting one route and
+    one nav entry.
+
+    q1 (label, cost, budget, pct, n) · q2 (label, tracked, budget_h, pct, n)
+    q3 (label, marge, budget, cost, n) · q4/q5 (label, marge, offerte, cost, n)
+    """
+    bars = ""
+    for naam, cost, budget, pct, n in q1:
+        color = "var(--red)" if pct > 100 else "var(--amber)" if pct >= 80 else "var(--green)"
+        tip = t("q1_tip", lang).format(cost=eur(cost), budget=eur(budget), pct=pct, n=n)
+        bars += _abar(naam, min(pct, 100), f"{pct}%", color, tip)
+    p1 = _an_panel(lang, "q1_t", "q1_s", "q1_info", bars)
+
+    bars = ""
+    for naam, tracked, budget, pct, n in q2:
+        color = "var(--red)" if pct >= 100 else "var(--amber)" if pct >= 80 else "var(--green)"
+        tip = t("an2_tip", lang).format(tracked=tracked, budget=budget, pct=pct, n=n)
+        bars += _abar(naam, min(pct, 100), f"{pct}%", color, tip)
+    p2 = _an_panel(lang, "an2_t", "an2_s", "an2_info", bars, empty_key="an2_empty")
+
+    def profit_bars(rows, tipkey):
+        mx = max((abs(m) for _, m, _b, _c, _n in rows), default=0) or 1
+        out = ""
+        for naam, marge, basis, cost, n in rows:
+            color = "var(--green)" if marge >= 0 else "var(--red)"
+            tip = t(tipkey, lang).format(basis=eur(basis), cost=eur(cost), marge=eur(marge), n=n)
+            out += _abar(naam, abs(marge) / mx * 100, eur(marge), color, tip)
+        return out
+    p3 = _an_panel(lang, "q3_t", "q3_s", "q3_info", profit_bars(q3, "q3_tip"))
+    p4 = _an_panel(lang, "q4_t", "q4_s", "q4_info", profit_bars(q4, "q4_tip"))
+    p5 = _an_panel(lang, "q5_t", "q5_s", "q5_info", profit_bars(q5, "q5_tip"))
+
+    return (f'<p class="panel-s" style="margin-bottom:12px">{esc(t("q_sub",lang))}</p>'
+            f'{_analyse_filterbar(lang, f, "/app/analyse2")}'
+            f'<div class="grid2">{p1}{p2}{p3}{p4}{p5}</div>{_analyse_filterjs(lang)}')
+
+
+def render_analyse(lang, g1, g2, g3, g4, g5, g6, f):
+    """Six graphs over the selected projects (period or explicit selection).
+    g1 (naam, billed, budget, delta_pct, n) · g2 (naam, tracked, budget_h, pct, n)
+    g3/g4/g6 (naam, marge, billed, cost, n) · g5 (naam, avg_h, n) · f = filter state."""
+    def panel(tk, sk, ik, inner, empty_key="an_empty"):
+        empty = f'<p class="panel-s">{esc(t(empty_key,lang))}</p>'
+        return (f'<div class="card" style="padding:20px 22px"><p class="panel-t">{esc(t(tk,lang))}'
+                f'<span class="pinfo" title="{esc(t(ik,lang))}">i</span></p>'
+                f'<p class="panel-s">{esc(t(sk,lang))}</p>{inner or empty}</div>')
+
+    fbar = _analyse_filterbar(lang, f, "/app/analyse")
+    fjs = _analyse_filterjs(lang)
 
     # 1) Invoiced vs quote budget per phase: bar = billed/budget, label = ±delta%.
     h = ""

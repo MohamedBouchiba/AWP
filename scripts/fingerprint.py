@@ -91,6 +91,7 @@ PAGES = [
     "/app",
     "/app/analyse",
     "/app/analyse?period=3",
+    "/app/analyse2",
     "/app/meldingen",
     "/app/beheer",
     "/app/project/a346",

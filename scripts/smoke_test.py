@@ -395,6 +395,50 @@ with client.session_transaction() as s:
 assert client.post("/app/project/fx-old/afgerond", data={"afgerond": "1"}).status_code == 403
 print("OK   export filtre + surcharge reservee aux admins")
 
+# --- feedback round 4: Analyse 2 + chronological order (lot 6) -------------
+# Give fx-new phases with a cost, in DELIBERATELY reversed quote order, so the
+# chronological sort has something real to prove.
+CHRONO = calc_mod.build_phases([
+    {"name": "9. NAZORG", "budget_eur": 1000.0, "spent_eur": 500.0, "cost_eur": 900.0,
+     "tracked_hours": 9.0, "budget_hours": 10.0},
+    {"name": "3. VOORONTWERP", "budget_eur": 2000.0, "spent_eur": 500.0, "cost_eur": 400.0,
+     "tracked_hours": 4.0, "budget_hours": 20.0},
+    {"name": "1. ADMINISTRATIE", "budget_eur": 100.0, "spent_eur": 50.0, "cost_eur": 50.0,
+     "tracked_hours": 1.0, "budget_hours": 2.0},
+], cfg_mod.DEFAULT_THRESHOLDS, phases_mod.DEFAULT_TAXONOMY)
+store.upsert_snapshot(dict(store.get_snapshot("fx-new"), phases_json=json.dumps(CHRONO)))
+
+check("/app/analyse2", 200, login=True, contains="Kostprijs vs geofferteerd budget per fase")
+check("/app/analyse2", 200, login=True, contains="Rendabiliteit per categorie (offerte")
+# Analyse 2 must not mention invoicing anywhere -- that is its whole purpose.
+r = check("/app/analyse2", 200, login=True)
+an2 = r.get_data(as_text=True)
+body_from_filters = an2[an2.index('class="grid2"'):]
+assert "Gefactureerd" not in body_from_filters, "Analyse 2 parle encore de facturation"
+print("OK   Analyse 2 : graphes offerte/kostprijs, zero facturation")
+
+# NAZORG (9) must render AFTER ADMINISTRATIE (1) and VOORONTWERP (3), even though
+# NAZORG has by far the worst percentage -> proves the sort is chronological.
+for page in ("/app/analyse", "/app/analyse2"):
+    r = check(page, 200, login=True, contains="NAZORG")
+    b = r.get_data(as_text=True)
+    g = b[b.index('class="grid2"'):]
+    assert g.index("ADMINISTRATIE") < g.index("VOORONTWERP") < g.index("NAZORG"), \
+        f"{page}: les fases ne sont pas en ordre chronologique"
+print("OK   fases en ordre chronologique sur les deux analyses")
+
+# Analyse 2 shares the filter machinery, and its export is a real xlsx.
+check("/app/analyse2?period=1", 200, login=True, contains="1 projecten in selectie")
+check("/app/analyse2?dossier=afgerond", 200, login=True, contains="1 projecten in selectie")
+r = check("/app/analyse2/export", 200, needs_style=False, login=True, raw=True)
+assert r.get_data()[:2] == b"PK", "export Analyse 2 n'est pas un xlsx"
+assert "analyse2" in r.headers.get("Content-Disposition", ""), "nom de fichier export incorrect"
+check("/app/analyse2/export", 302, needs_style=False, login=False)
+print("OK   Analyse 2 : filtres partages + export xlsx protege")
+
+# Both analyses reachable from the sidebar.
+check("/app", 200, login=True, contains='href="/app/analyse2"')
+
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 
 if failures:

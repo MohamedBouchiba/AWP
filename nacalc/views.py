@@ -291,8 +291,16 @@ def _aggregate_phases(sel, taxonomy=None):
                 "billed": 0.0, "budget_b": 0.0, "n_billed": 0,
                 "tracked": 0.0, "budget_h": 0.0,
                 "m3": 0.0, "billed3": 0.0, "cost3": 0.0, "n_m3": 0,
+                # Analyse 2: cost vs quoted budget, over the instances where the
+                # cost is actually known -- same "matched set" discipline as the
+                # billed sums above, so the ratio can't be skewed by blanks.
+                "cost": 0.0, "budget_c": 0.0, "n_cost": 0,
                 "n": 0, "started_hours": []})
             d["n"] += 1
+            if p.get("cost_eur") is not None and (p.get("budget_eur") or 0) > 0:
+                d["cost"] += p["cost_eur"]
+                d["budget_c"] += p["budget_eur"]
+                d["n_cost"] += 1
             d["tracked"] += p.get("tracked_hours") or 0
             d["budget_h"] += p.get("budget_hours") or 0
             billed, cost = p.get("billed_eur"), p.get("cost_eur")
@@ -330,6 +338,78 @@ def _profit_by(sel, key):
                   key=lambda x: x[1])
 
 
+def _profit_by_quote(sel, key):
+    """Quote − effective cost, grouped by a snapshot column.
+
+    The quote-based twin of _profit_by. This is the very definition Teamleader
+    uses for its own `margin` field (price − cost), and unlike the invoiced
+    figure the quote is actually filled in: on A346, offerte = €63 860,78 while
+    every phase's amount_billed is null.
+    """
+    by = {}
+    for s in sel:
+        k = (s.get(key) or "").strip()
+        offerte, kost = s.get("offerte_awp"), s.get("effectieve_kost")
+        if not k or not offerte or kost is None:
+            continue
+        d = by.setdefault(k, {"offerte": 0.0, "cost": 0.0, "n": 0})
+        d["offerte"] += offerte
+        d["cost"] += kost
+        d["n"] += 1
+    return sorted(((k, round(d["offerte"] - d["cost"], 2), round(d["offerte"], 2),
+                    round(d["cost"], 2), d["n"]) for k, d in by.items()),
+                  key=lambda x: x[1])
+
+
+def _phase_rows(agg):
+    """Aggregated phases in CHRONOLOGICAL order — the client's quote layout.
+
+    "Kunnen de fases bij de analyse chronologisch staan ipv per %? Zo kunnen we
+    gewoon onze offertelayout hierin zien." Every per-phase graph now reads in
+    the same order, which also makes them comparable side by side.
+    """
+    return sorted(agg.values(), key=lambda d: (d["order"], d["label"]))
+
+
+@bp.get("/app/analyse2")
+@auth.login_required
+def analyse2():
+    """Geofferteerd vs kostprijs bureau — no invoicing anywhere on this page."""
+    lang = get_lang()
+    snaps = store.list_snapshots(architectuur_only=True)
+    period, d_from, d_to, pids = _filter_args()
+    dossier = _dossier_arg()
+    sel = _select_dossier(_select_snapshots(snaps, period, d_from, d_to, pids), dossier)
+    rows = _phase_rows(_aggregate_phases(sel, _taxonomy()))
+
+    q1 = [(d["label"], round(d["cost"], 2), round(d["budget_c"], 2),
+           round(d["cost"] / d["budget_c"] * 100, 1), d["n_cost"])
+          for d in rows if d["budget_c"] > 0]
+    q2 = [(d["label"], round(d["tracked"], 1), round(d["budget_h"], 1),
+           round(d["tracked"] / d["budget_h"] * 100), d["n"])
+          for d in rows if d["budget_h"] > 0]
+    q3 = [(d["label"], round(d["budget_c"] - d["cost"], 2), round(d["budget_c"], 2),
+           round(d["cost"], 2), d["n_cost"])
+          for d in rows if d["n_cost"]]
+    q4 = _profit_by_quote(sel, "categorie")
+    q5 = _profit_by_quote(sel, "contracttype")
+
+    fstate = {"period": period, "from": d_from, "to": d_to, "pids": pids,
+              "dossier": dossier,
+              "projects": [(s["project_id"], f'{s["project_key"] or ""} · {s["naam"] or ""}')
+                           for s in snaps],
+              "n_sel": len(sel)}
+    content = pages.render_analyse2(lang, q1, q2, q3, q4, q5, fstate)
+    return render_page("analyse2", t("nav_analyse2", lang), t("an2_title", lang), content)
+
+
+@bp.get("/app/analyse2/export")
+@auth.login_required
+def analyse2_export():
+    """Same rows as the analyse export, but the quote-based columns."""
+    return _export_xlsx(quote_basis=True)
+
+
 @bp.get("/app/analyse")
 @auth.login_required
 def analyse():
@@ -338,32 +418,31 @@ def analyse():
     period, d_from, d_to, pids = _filter_args()
     dossier = _dossier_arg()
     sel = _select_dossier(_select_snapshots(snaps, period, d_from, d_to, pids), dossier)
-    agg = _aggregate_phases(sel, _taxonomy())
+    # Chronological, not by percentage: "Kunnen de fases bij de analyse
+    # chronologisch staan ipv per %? Zo kunnen we gewoon onze offertelayout
+    # hierin zien." Applies to every per-phase graph, so they line up.
+    rows = _phase_rows(_aggregate_phases(sel, _taxonomy()))
 
     # 1) Invoiced € vs quote budget € per phase (delta% above/below budget).
-    g1 = sorted(((d["label"], round(d["billed"], 2), round(d["budget_b"], 2),
-                  round(d["billed"] / d["budget_b"] * 100 - 100), d["n_billed"])
-                 for d in agg.values() if d["budget_b"] > 0 and d["n_billed"]),
-                key=lambda x: -x[3])
+    g1 = [(d["label"], round(d["billed"], 2), round(d["budget_b"], 2),
+           round(d["billed"] / d["budget_b"] * 100 - 100), d["n_billed"])
+          for d in rows if d["budget_b"] > 0 and d["n_billed"]]
     # 2) Tracked vs budgeted hours per phase.
-    g2 = sorted(((d["label"], round(d["tracked"], 1), round(d["budget_h"], 1),
-                  round(d["tracked"] / d["budget_h"] * 100), d["n"])
-                 for d in agg.values() if d["budget_h"] > 0),
-                key=lambda x: -x[3])
+    g2 = [(d["label"], round(d["tracked"], 1), round(d["budget_h"], 1),
+           round(d["tracked"] / d["budget_h"] * 100), d["n"])
+          for d in rows if d["budget_h"] > 0]
     # 3) Profitability per phase: invoiced − effective cost (€), paired instances only.
-    g3 = sorted(((d["label"], round(d["m3"], 2), round(d["billed3"], 2),
-                  round(d["cost3"], 2), d["n_m3"])
-                 for d in agg.values() if d["n_m3"]),
-                key=lambda x: x[1])
+    g3 = [(d["label"], round(d["m3"], 2), round(d["billed3"], 2),
+           round(d["cost3"], 2), d["n_m3"])
+          for d in rows if d["n_m3"]]
     # 4) Profitability per CATEGORY (client: "type is actually categorie").
     g4 = _profit_by(sel, "categorie")
     # 6) Profitability per contract type.
     g6 = _profit_by(sel, "contracttype")
     # 5) Average tracked hours per started phase.
-    g5 = sorted(((d["label"], round(sum(d["started_hours"]) / len(d["started_hours"]), 1),
-                  len(d["started_hours"]))
-                 for d in agg.values() if d["started_hours"]),
-                key=lambda x: -x[1])
+    g5 = [(d["label"], round(sum(d["started_hours"]) / len(d["started_hours"]), 1),
+           len(d["started_hours"]))
+          for d in rows if d["started_hours"]]
 
     fstate = {"period": period, "from": d_from, "to": d_to, "pids": pids,
               "dossier": dossier,
@@ -374,13 +453,14 @@ def analyse():
     return render_page("analyse", t("nav_analyse", lang), t("an_sub", lang), content)
 
 
-@bp.get("/app/analyse/export")
-@auth.login_required
-def analyse_export():
+def _export_xlsx(quote_basis=False):
     """Excel export of the data behind the graphs, for the ACTIVE filter.
 
-    Two sheets: 'Projecten' (basis of graphs 4 & 6) and 'Fases' (basis of 1,2,3,5).
-    Deliberately contains NO per-person data, so it needs no admin gate.
+    Two sheets: 'Projecten' (the per-project graphs) and 'Fases' (the per-phase
+    ones). Deliberately contains NO per-person data, so it needs no admin gate.
+
+    `quote_basis` swaps the money columns from invoiced to quoted, matching
+    whichever analysis page the export was launched from.
     """
     from io import BytesIO
     from openpyxl import Workbook
@@ -388,33 +468,54 @@ def analyse_export():
 
     snaps = store.list_snapshots(architectuur_only=True)
     sel = _select_dossier(_select_snapshots(snaps, *_filter_args()), _dossier_arg())
+    tx = _taxonomy()
+    now_ym = time.strftime("%Y-%m", time.gmtime())
+    idle = store.get_config("afgerond_maanden", config.DEFAULT_AFGEROND_MAANDEN)
     xs = components.xl_safe   # neutralise spreadsheet formula injection
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Projecten"
-    ws.append(["Project", "Naam", "Categorie", "Contracttype", "Status",
-               "Gefactureerd", "Effectieve kost", "Marge (gefactureerd - kost)",
-               "Uren gepresteerd", "Uren begroot", "Kostbron"])
+    money_cols = (["Offerte AWP", "Effectieve kost", "Marge (offerte - kost)"] if quote_basis
+                  else ["Gefactureerd", "Effectieve kost", "Marge (gefactureerd - kost)"])
+    ws.append(["Project", "Naam", "Categorie", "Contracttype", "Verantwoordelijke",
+               "Status", "Dossier"] + money_cols +
+              ["Uren gepresteerd (gestart)", "Uren begroot (gestart)",
+               "Uren begroot (totaal)", "Kostbron"])
     for s in sel:
+        kost = s.get("effectieve_kost")
+        if quote_basis:
+            basis = s.get("offerte_awp") or None
+            marge = round(basis - kost, 2) if (basis and kost is not None) else None
+        else:
+            basis = components.invoiced_total(s) or None
+            marge = components.visible_marge(s)   # blank when nothing invoiced
         ws.append([xs(s.get("project_key")), xs(s.get("naam")), xs(s.get("categorie")),
-                   xs(s.get("contracttype")), xs(s.get("summary_status")),
-                   s.get("gefactureerd"), s.get("effectieve_kost"),
-                   components.visible_marge(s),          # blank when nothing invoiced
-                   s.get("uren_gepresteerd"), s.get("uren_begroot"),
-                   xs(s.get("kost_bron"))])
+                   xs(s.get("contracttype")), xs(s.get("verantw_arch")),
+                   xs(s.get("summary_status")),
+                   "afgerond" if is_afgerond(s, now_ym, idle) else "lopend",
+                   basis, kost, marge,
+                   s.get("uren_gepresteerd_gestart"), s.get("uren_begroot_gestart"),
+                   s.get("uren_begroot"), xs(s.get("kost_bron"))])
 
     wf = wb.create_sheet("Fases")
-    wf.append(["Project", "Fase", "Budget EUR", "Verbruikt EUR", "Verbruikt %",
-               "Gefactureerd EUR", "Kost EUR", "Uren gepresteerd", "Uren begroot",
-               "Gestart", "Inbegrepen"])
+    # "Fase (samengevoegd)" is the canonical name the graphs group on; the raw
+    # Teamleader title stays next to it, which is what makes this sheet the
+    # fastest way to spot phase names that still need an alias.
+    wf.append(["Project", "Fase (Teamleader)", "Fase (samengevoegd)", "Overhead",
+               "Budget EUR", "Verbruikt EUR", "Verbruikt %", "Basis",
+               "Kost EUR", "Kostbron", "Gefactureerd EUR",
+               "Uren gepresteerd", "Uren begroot", "Gestart", "Inbegrepen"])
     for s in sel:
         for p in json.loads(s["phases_json"] or "[]"):
-            # .get() everywhere: pre-migration phases lack billed_eur/cost_eur
+            # .get() everywhere: pre-migration phases lack the newer keys
             # -> blank cells, never a misleading 0.
-            wf.append([xs(s.get("project_key")), xs(p.get("naam")),
-                       p.get("budget_eur"), p.get("spent_eur"), p.get("pct"),
-                       p.get("billed_eur"), p.get("cost_eur"),
+            c = phases_mod.canonical(p.get("naam"), tx)
+            wf.append([xs(s.get("project_key")), xs(p.get("naam")), xs(c["label"]),
+                       "ja" if c["overhead"] else "nee",
+                       p.get("budget_eur"), p.get("verbruikt_eur", p.get("spent_eur")),
+                       p.get("pct"), xs(p.get("basis")),
+                       p.get("cost_eur"), xs(p.get("kost_bron")), p.get("billed_eur"),
                        p.get("tracked_hours"), p.get("budget_hours") or None,
                        "ja" if p.get("started") else "nee",
                        "ja" if p.get("applicable") else "nee"])
@@ -422,10 +523,17 @@ def analyse_export():
     bio = BytesIO()          # fresh buffer per request (never a module global)
     wb.save(bio)
     bio.seek(0)
+    naam = "analyse2" if quote_basis else "analyse"
     return send_file(
         bio, as_attachment=True,
-        download_name=f"nacalculatie-analyse-{time.strftime('%Y%m%d')}.xlsx",
+        download_name=f"nacalculatie-{naam}-{time.strftime('%Y%m%d')}.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@bp.get("/app/analyse/export")
+@auth.login_required
+def analyse_export():
+    return _export_xlsx(quote_basis=False)
 
 
 # ---------- sync ----------
