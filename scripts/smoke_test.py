@@ -604,7 +604,19 @@ assert inner, "encart uren introuvable"
 assert inner.group(1).count('class="ib-r') <= 2, \
     f"l'encart liste trop de lignes : {inner.group(1)[:300]}"
 assert "meegeteld" in inner.group(1), "l'encart ne dit pas combien de fases sont comptees"
-print("OK   encarts d'info structures et courts")
+# La liste entre parentheses doit rester plafonnee, meme sur un dossier ou
+# aucune fase n'a demarre (10 fases exclues -> 3 noms + "+7 andere").
+MANY = calc_mod.build_phases(
+    [{"name": f"{i}. FASE{i}", "budget_eur": 100.0, "spent_eur": 0.0,
+      "cost_eur": None, "tracked_hours": 0.0, "budget_hours": 5.0} for i in range(1, 11)],
+    cfg_mod.DEFAULT_THRESHOLDS, phases_mod.DEFAULT_TAXONOMY)
+store.upsert_snapshot(dict(store.get_snapshot("fx-zero"), project_id="fx-many",
+                           project_key="A901", phases_json=json.dumps(MANY)))
+mb = client.get("/app/project/fx-many").get_data(as_text=True)
+mi = re.search(r'ib-no">([^<]*)</span>', mb)
+assert mi and "andere" in mi.group(1) and mi.group(1).count(",") <= 3, \
+    f"la liste des fases exclues n'est pas plafonnee : {mi.group(1) if mi else None}"
+print("OK   encarts d'info structures, courts et plafonnes")
 
 # Le slash orphelin : il faut une fase SANS budget d'heures pour l'exercer.
 # fx-zero a exactement ca (budget_hours=0) -- la fixture precedente avait un

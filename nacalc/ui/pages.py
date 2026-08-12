@@ -342,8 +342,13 @@ def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
     # buried the answer.
     _rows = [("ok", t("dr_uren_tip_head", lang).format(n=len(_inc)))]
     if _exc:
-        _rows.append(("no", t("dr_uren_tip_out", lang).format(
-            m=len(_exc), lijst=", ".join(p["naam"] for p, _r in _exc))))
+        # Cap the list: on a project where nothing has started yet this named
+        # all ten phases, which is the wall of text the bubble exists to avoid.
+        _names = [p["naam"] for p, _r in _exc]
+        _shown = ", ".join(_names[:3])
+        if len(_names) > 3:
+            _shown += t("dr_uren_tip_more", lang).format(n=len(_names) - 3)
+        _rows.append(("no", t("dr_uren_tip_out", lang).format(m=len(_exc), lijst=_shown)))
     # Overhead is counted HERE but deliberately ignored by the budget status,
     # and that is exactly the distinction people trip over.
     _note = " ".join(

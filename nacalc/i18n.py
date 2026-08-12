@@ -274,6 +274,7 @@ S = {
                           "en": "Which phases are in this figure?"},
     "dr_uren_tip_head": {"nl": "{n} fasen meegeteld", "en": "{n} phases counted"},
     "dr_uren_tip_out": {"nl": "{m} niet meegeteld ({lijst})", "en": "{m} not counted ({lijst})"},
+    "dr_uren_tip_more": {"nl": " +{n} andere", "en": " +{n} more"},
     "dr_uren_tip_overhead": {"nl": "{naam} telt niet mee in de budgetstatus.",
                              "en": "{naam} does not count in the budget status."},
     "dr_uren_tip_total": {"nl": "Totaal begroot: {n}u.", "en": "Total budgeted: {n}h."},
