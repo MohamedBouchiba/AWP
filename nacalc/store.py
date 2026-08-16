@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS meldingen (
   id INTEGER PRIMARY KEY, project_id TEXT NOT NULL, project_key TEXT, naam TEXT,
   phase_naam TEXT, severity TEXT NOT NULL, pct REAL, message TEXT, created_at TEXT NOT NULL,
   seen INTEGER NOT NULL DEFAULT 0, verantw TEXT, notified_at TEXT,
-  soort TEXT, afgehandeld_at TEXT, afgehandeld_door TEXT,
+  soort TEXT, afgehandeld_at TEXT, afgehandeld_door TEXT, uren REAL, uren_budget REAL,
   UNIQUE(project_id, phase_naam, severity));
 CREATE TABLE IF NOT EXISTS sync_state (
   id INTEGER PRIMARY KEY CHECK(id=1), last_run_at TEXT, last_ok_at TEXT,
@@ -77,6 +77,8 @@ _MIGRATE_COLS = {
         ("soort", "TEXT"),
         ("afgehandeld_at", "TEXT"),
         ("afgehandeld_door", "TEXT"),
+        ("uren", "REAL"),
+        ("uren_budget", "REAL"),
     ),
 }
 
@@ -274,7 +276,7 @@ def get_snapshot(project_id):
 
 # ---------- meldingen ----------
 def upsert_melding(project_id, project_key, naam, phase_naam, severity, pct,
-                   verantw=None, soort="fase"):
+                   verantw=None, soort="fase", uren=None, uren_budget=None):
     """Insert an alert, or refresh an existing one WITHOUT resetting its state.
 
     created_at, seen, notified_at and afgehandeld_at are deliberately left alone
@@ -288,13 +290,14 @@ def upsert_melding(project_id, project_key, naam, phase_naam, severity, pct,
     """
     with _conn() as c:
         c.execute(
-            "INSERT INTO meldingen(project_id,project_key,naam,phase_naam,severity,pct,created_at,seen,verantw,soort)"
-            " VALUES(?,?,?,?,?,?,?,0,?,?)"
+            "INSERT INTO meldingen(project_id,project_key,naam,phase_naam,severity,pct,created_at,seen,verantw,soort,uren,uren_budget)"
+            " VALUES(?,?,?,?,?,?,?,0,?,?,?,?)"
             " ON CONFLICT(project_id,phase_naam,severity) DO UPDATE SET"
             " pct=excluded.pct, project_key=excluded.project_key,"
-            " naam=excluded.naam, verantw=excluded.verantw, soort=excluded.soort",
+            " naam=excluded.naam, verantw=excluded.verantw, soort=excluded.soort,"
+            " uren=excluded.uren, uren_budget=excluded.uren_budget",
             (project_id, project_key, naam, phase_naam, severity, pct, now_iso(),
-             verantw, soort))
+             verantw, soort, uren, uren_budget))
 
 
 def prune_meldingen(project_id, keep):

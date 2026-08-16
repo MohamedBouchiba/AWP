@@ -289,3 +289,4 @@ thead th{box-shadow:0 1px 0 var(--line),0 4px 10px -8px rgba(20,30,50,.35)}
   *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
     transition-duration:.001ms!important;scroll-behavior:auto!important}
 }
+.ml-uren{margin-left:9px;font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}

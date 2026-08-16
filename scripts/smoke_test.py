@@ -750,7 +750,11 @@ assert "geen enkele verantwoordelijke gekoppeld" in body, "pas de bandeau d'expl
 assert body.count('class="alert') >= 4, "les meldingen ne sont pas listees"
 assert "is-project" in body, "les meldingen projet ne sont pas distinguees"
 assert "nadert het budget" in body and "over budget" in body, "messages par seuil absents"
-print("OK   ecran : vues, bandeau, distinction projet/fase, messages par seuil")
+# Les heures brutes a cote du % : sans elles, un budget factice de 1.0u produit
+# un "1828%" incomprehensible (vu en production sur A384).
+assert 'class="ml-uren"' in body and "/ 10.0u" in body, \
+    "les heures brutes n'accompagnent pas le pourcentage"
+print("OK   ecran : vues, bandeau, distinction projet/fase, messages + heures brutes")
 
 # Rattacher le compte au code WB -> la vue par defaut se limite a ses dossiers.
 store.set_config("verantw_emails", {"WB": EMAIL})

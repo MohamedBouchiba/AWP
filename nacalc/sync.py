@@ -287,7 +287,9 @@ def _make_meldingen(snap, thresholds=None, project_thresholds=None):
     for p in _alertable(phases):
         for sev, _drempel in _crossed(p.get("uren_pct"), levels):
             store.upsert_melding(pid, key, naam, p["naam"], sev, p["uren_pct"],
-                                 verantw=verantw, soort="fase")
+                                 verantw=verantw, soort="fase",
+                                 uren=p.get("tracked_hours"),
+                                 uren_budget=p.get("budget_hours"))
             keep.add((p["naam"], sev))
 
     # Project level: the cumulative hours over ALL phases, including the ones
@@ -303,7 +305,8 @@ def _make_meldingen(snap, thresholds=None, project_thresholds=None):
         for _k, drempel in _crossed(pct, [(f"p{d}", d) for d in pth]):
             sev = f"p{int(drempel)}"
             store.upsert_melding(pid, key, naam, "", sev, pct,
-                                 verantw=verantw, soort="project")
+                                 verantw=verantw, soort="project",
+                                 uren=round(trak, 1), uren_budget=round(budg, 1))
             keep.add(("", sev))
 
     store.prune_meldingen(pid, keep)

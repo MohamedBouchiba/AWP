@@ -481,6 +481,12 @@ def render_meldingen(lang, items, scope="mijn", show_done=False, is_admin=False,
         soort = t("ml_p_soort" if project else "ml_f_soort", lang)
         who = (f'<span class="ml-who">{esc(m["verantw"])}</span>'
                if m.get("verantw") else "")
+        # The raw hours next to the percentage. Several AWP projects carry
+        # placeholder time budgets of 1.0u, which produce headlines like "1828%
+        # of its hours budget" -- seeing "129.3 / 8.0u" beside it makes that read
+        # as a missing budget rather than a crisis.
+        uren = (f'<span class="ml-uren">{esc(_uren_txt(m["uren"], m["uren_budget"]))}</span>'
+                if m.get("uren_budget") else "")
         out.append(
             f'<div class="alert{" is-project" if project else ""}{" is-done" if done else ""}">'
             f'<div class="ai {"ai-over" if over else "ai-warn"}">{icon}</div>'
@@ -489,7 +495,11 @@ def render_meldingen(lang, items, scope="mijn", show_done=False, is_admin=False,
             f'<div><div class="at">{esc(m["project_key"] or "")} · {esc(m["naam"] or "")}'
             f'<span class="ml-kind">{esc(soort)}</span>'
             f'{who}</div>'
-            f'<div class="ad">{esc(melding_text(lang, m))}</div></div>'
+            # The raw hours next to the percentage. Several AWP projects carry
+            # placeholder time budgets of 1.0u, which turn into headlines like
+            # "1828% of its hours budget" -- seeing "129.3 / 8.0u" next to it
+            # makes that read as a missing budget rather than a crisis.
+            f'<div class="ad">{esc(melding_text(lang, m))}{uren}</div></div>'
             f'<div class="ax"><div class="pct" style="color:{col}">{m["pct"]}%</div>{act}'
             f'<button class="btn" onclick="openDrawer(\'{m["project_id"]}\')">{esc(t("ml_view",lang))} →</button></div></div>')
     return "".join(out)
