@@ -33,9 +33,8 @@ CREATE TABLE IF NOT EXISTS meldingen (
   id INTEGER PRIMARY KEY, project_id TEXT NOT NULL, project_key TEXT, naam TEXT,
   phase_naam TEXT, severity TEXT NOT NULL, pct REAL, message TEXT, created_at TEXT NOT NULL,
   seen INTEGER NOT NULL DEFAULT 0, verantw TEXT, notified_at TEXT,
+  soort TEXT, afgehandeld_at TEXT, afgehandeld_door TEXT,
   UNIQUE(project_id, phase_naam, severity));
-CREATE TABLE IF NOT EXISTS melding_snooze (
-  project_id TEXT PRIMARY KEY, until_at TEXT NOT NULL, by_user TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sync_state (
   id INTEGER PRIMARY KEY CHECK(id=1), last_run_at TEXT, last_ok_at TEXT,
   running INTEGER NOT NULL DEFAULT 0, last_error TEXT, projects_synced INTEGER DEFAULT 0);
@@ -75,6 +74,9 @@ _MIGRATE_COLS = {
     "meldingen": (
         ("verantw", "TEXT"),
         ("notified_at", "TEXT"),
+        ("soort", "TEXT"),
+        ("afgehandeld_at", "TEXT"),
+        ("afgehandeld_door", "TEXT"),
     ),
 }
 
@@ -125,6 +127,7 @@ def _seed_default_config():
         "worktype_ids": {},
         "phase_taxonomy": phases.DEFAULT_TAXONOMY,
         "status_basis": config.DEFAULT_STATUS_BASIS,
+        "project_thresholds": config.DEFAULT_PROJECT_THRESHOLDS,
     }
     for k, v in defaults.items():
         if get_config(k, None) is None:
@@ -270,26 +273,28 @@ def get_snapshot(project_id):
 
 
 # ---------- meldingen ----------
-def upsert_melding(project_id, project_key, naam, phase_naam, severity, pct, message,
-                   verantw=None):
+def upsert_melding(project_id, project_key, naam, phase_naam, severity, pct,
+                   verantw=None, soort="fase"):
     """Insert an alert, or refresh an existing one WITHOUT resetting its state.
 
-    created_at, seen and notified_at are deliberately left alone on conflict:
-    they are what makes "this alert is not new" and "we already emailed about
-    it" knowable. The old code deleted every alert of a project before
-    re-inserting, so created_at was always "now", `seen` reset to 0 on every
-    hourly sync (the badge was permanently red), and any email keyed off these
-    rows would have fired once per phase per hour.
+    created_at, seen, notified_at and afgehandeld_at are deliberately left alone
+    on conflict: they are what makes "this alert is not new", "we already
+    emailed about it" and "someone has handled it" knowable. Without that, an
+    alert ticked off would come straight back on the next hourly sync.
+
+    One row per THRESHOLD crossed, not per current colour zone: a phase at 120%
+    has crossed 80, 100 and 115, so it carries three alerts — "per fase worden
+    maximaal drie meldingen gegenereerd, elk exact één keer".
     """
     with _conn() as c:
         c.execute(
-            "INSERT INTO meldingen(project_id,project_key,naam,phase_naam,severity,pct,message,created_at,seen,verantw)"
-            " VALUES(?,?,?,?,?,?,?,?,0,?)"
+            "INSERT INTO meldingen(project_id,project_key,naam,phase_naam,severity,pct,created_at,seen,verantw,soort)"
+            " VALUES(?,?,?,?,?,?,?,0,?,?)"
             " ON CONFLICT(project_id,phase_naam,severity) DO UPDATE SET"
-            " pct=excluded.pct, message=excluded.message, project_key=excluded.project_key,"
-            " naam=excluded.naam, verantw=excluded.verantw",
-            (project_id, project_key, naam, phase_naam, severity, pct, message, now_iso(),
-             verantw))
+            " pct=excluded.pct, project_key=excluded.project_key,"
+            " naam=excluded.naam, verantw=excluded.verantw, soort=excluded.soort",
+            (project_id, project_key, naam, phase_naam, severity, pct, now_iso(),
+             verantw, soort))
 
 
 def prune_meldingen(project_id, keep):
@@ -308,36 +313,17 @@ def prune_meldingen(project_id, keep):
 
 
 # ---------- alert notifications ----------
-def snooze_project(project_id, until_at, by_user=None):
-    """Mute a project's alert emails until a date. The Meldingen page offers it
-    so a budget review silences the reminders instead of people ignoring them."""
-    with _conn() as c:
-        c.execute("INSERT INTO melding_snooze(project_id,until_at,by_user,created_at)"
-                  " VALUES(?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET"
-                  " until_at=excluded.until_at, by_user=excluded.by_user,"
-                  " created_at=excluded.created_at",
-                  (project_id, until_at, by_user, now_iso()))
+def meldingen_to_notify():
+    """Alerts never emailed. Each one goes out exactly once, ever.
 
-
-def snoozed_projects(now=None):
-    now = now or now_iso()
-    with _conn() as c:
-        return {r["project_id"] for r in
-                c.execute("SELECT project_id FROM melding_snooze WHERE until_at > ?",
-                          (now,)).fetchall()}
-
-
-def meldingen_to_notify(not_since):
-    """Alerts never emailed, or last emailed before `not_since` (an ISO stamp).
-
-    The daily cap lives here rather than in the mailer, so a crash mid-send can
-    never turn into a second round of emails for the same alerts.
+    The old 24h window existed because alerts were deleted and recreated on
+    every sync. They persist now, so "once, full stop" is both simpler and what
+    the client asked for: "één melding en één mail per fase per project".
     """
     with _conn() as c:
         return [dict(r) for r in c.execute(
-            "SELECT * FROM meldingen WHERE notified_at IS NULL OR notified_at < ?"
-            " ORDER BY (severity='darkred') DESC, (severity='red') DESC, pct DESC",
-            (not_since,)).fetchall()]
+            "SELECT * FROM meldingen WHERE notified_at IS NULL"
+            " ORDER BY project_key, (soort='project') DESC, pct DESC").fetchall()]
 
 
 def mark_notified(ids, when=None):
@@ -349,16 +335,54 @@ def mark_notified(ids, when=None):
                   [when or now_iso()] + list(ids))
 
 
-def list_meldingen():
-    with _conn() as c:
-        return [dict(r) for r in c.execute(
-            "SELECT * FROM meldingen ORDER BY (severity='darkred') DESC,"
-            " (severity='red') DESC, pct DESC, created_at DESC").fetchall()]
+_MELDING_ORDER = (" ORDER BY (soort='project') DESC, (severity='darkred') DESC,"
+                  " (severity='red') DESC, pct DESC, created_at DESC")
 
 
-def count_unseen_meldingen():
+def list_meldingen(verantw=None, open_only=True):
+    """Alerts, newest and worst first.
+
+    `verantw` limits to one or more owner codes (the "my alerts" view);
+    `open_only` hides the ones already ticked off.
+    """
+    where, args = [], []
+    if open_only:
+        where.append("afgehandeld_at IS NULL")
+    if verantw:
+        codes = [verantw] if isinstance(verantw, str) else list(verantw)
+        if not codes:
+            return []
+        where.append(f"LOWER(TRIM(COALESCE(verantw,''))) IN ({','.join('?' * len(codes))})")
+        args += [c.strip().lower() for c in codes]
+    q = "SELECT * FROM meldingen"
+    if where:
+        q += " WHERE " + " AND ".join(where)
     with _conn() as c:
-        return c.execute("SELECT COUNT(*) n FROM meldingen WHERE seen=0").fetchone()["n"]
+        return [dict(r) for r in c.execute(q + _MELDING_ORDER, args).fetchall()]
+
+
+def afhandelen(melding_id, door=None):
+    """Tick an alert off. It stays out of the list until its threshold is
+    crossed again from scratch."""
+    with _conn() as c:
+        c.execute("UPDATE meldingen SET afgehandeld_at=?, afgehandeld_door=? WHERE id=?",
+                  (now_iso(), door, int(melding_id)))
+
+
+def heropenen(melding_id):
+    with _conn() as c:
+        c.execute("UPDATE meldingen SET afgehandeld_at=NULL, afgehandeld_door=NULL"
+                  " WHERE id=?", (int(melding_id),))
+
+
+def count_open_meldingen(verantw=None):
+    """Badge count: what is still OPEN, not what has not been looked at.
+
+    Was `seen`-based, which meant the badge only told you whether anyone had
+    visited the page. Now that alerts can be handled, "open" is the number that
+    matters.
+    """
+    return len(list_meldingen(verantw=verantw, open_only=True))
 
 
 def mark_meldingen_seen():

@@ -427,29 +427,70 @@ def render_drawer(lang, s, is_admin=False, user_names=None, afgerond=False,
 <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">{esc(basis_note)} {esc(t('ph_caption',lang))}</div>{note}
 {pp_html}</div>"""
 
-def render_meldingen(lang, items, snoozed=None, snooze_days=14):
+def melding_text(lang, m):
+    """The message for one alert, rendered at DISPLAY time.
+
+    Not stored: a message written into the row would stay frozen in whichever
+    language the sync happened to run in.
+    """
+    if m.get("soort") == "project":
+        return t("ml_m_project", lang).format(pct=m.get("pct"))
+    key = {"amber": "ml_m_amber", "red": "ml_m_red"}.get(m["severity"], "ml_m_darkred")
+    return t(key, lang).format(f=m.get("phase_naam") or "", pct=m.get("pct"))
+
+
+def render_meldingen(lang, items, scope="mijn", show_done=False, is_admin=False,
+                     unlinked=False):
+    """The alert list: mine by default, everything for an admin who asks.
+
+    One row per threshold crossed — a phase at 120% shows three, exactly as the
+    client specified ("maximaal drie meldingen, elk exact één keer"). Handled
+    alerts drop out of the list and do not come back.
+    """
+    def link(sc, done, label, on):
+        q = f"?scope={sc}" + ("&done=1" if done else "")
+        return (f'<a class="ml-tab{" on" if on else ""}" href="/app/meldingen{q}">'
+                f'{esc(label)}</a>')
+    tabs = [link("mijn", show_done, t("ml_scope_mine", lang), scope == "mijn")]
+    if is_admin or unlinked:
+        tabs.append(link("alle", show_done, t("ml_scope_all", lang), scope == "alle"))
+    tabs.append(link(scope, not show_done,
+                     t("ml_hide_done" if show_done else "ml_show_done", lang), False))
+    head = (f'<p class="panel-s" style="margin-bottom:12px">{esc(t("ml_sub",lang))}</p>'
+            f'<div class="ml-tabs">{"".join(tabs)}</div>')
+    if unlinked:
+        head += f'<div class="rbanner">💡 {esc(t("ml_unlinked",lang))}<a href="/app/beheer">Beheer</a></div>'
     if not items:
-        return f'<p class="panel-s" style="margin-bottom:18px">{esc(t("ml_sub",lang))}</p><div class="card" style="padding:30px;text-align:center;color:var(--muted)">{esc(t("ml_empty",lang))}</div>'
-    snoozed = snoozed or set()
-    out = [f'<p class="panel-s" style="margin-bottom:18px">{esc(t("ml_sub",lang))}</p>']
+        return (head + f'<div class="card" style="padding:30px;text-align:center;color:var(--muted)">'
+                f'{esc(t("ml_none_open",lang))}</div>')
+
+    out = [head]
     for m in items:
-        over = m["severity"] in ("red", "darkred")
+        project = m.get("soort") == "project"
+        over = m["severity"] in ("red", "darkred") or m["severity"] == "p100"
         col = "var(--red)" if over else "var(--amber)"
-        # Snooze is per PROJECT and stops the emails only -- the alert stays on
-        # this page, so nothing is hidden from whoever is reading it.
-        if m["project_id"] in snoozed:
-            mute = f'<span class="ml-muted">🔕 {esc(t("ml_snoozed",lang))}</span>'
+        icon = "📊" if project else ("🔴" if over else "🟠")
+        done = m.get("afgehandeld_at")
+        if done:
+            act = (f'<form method="post" action="/app/meldingen/{m["id"]}/heropenen" class="ml-act">'
+                   f'<button class="btn" type="submit">↩ {esc(t("ml_reopen",lang))}</button></form>')
         else:
-            mute = (f'<form method="post" action="/app/meldingen/snooze" class="ml-snooze">'
-                    f'<input type="hidden" name="project_id" value="{esc(m["project_id"])}">'
-                    f'<input type="hidden" name="days" value="{snooze_days}">'
-                    f'<button class="btn" type="submit" title="{esc(t("ml_snooze_tip",lang).format(n=snooze_days))}">'
-                    f'🔕 {esc(t("ml_snooze",lang))}</button></form>')
+            act = (f'<form method="post" action="/app/meldingen/{m["id"]}/afhandelen" class="ml-act">'
+                   f'<button class="btn ml-ok" type="submit" title="{esc(t("ml_do_tip",lang))}">'
+                   f'✓ {esc(t("ml_do",lang))}</button></form>')
+        soort = t("ml_p_soort" if project else "ml_f_soort", lang)
+        who = (f'<span class="ml-who">{esc(m["verantw"])}</span>'
+               if m.get("verantw") else "")
         out.append(
-            f'<div class="alert"><div class="ai {"ai-over" if over else "ai-warn"}">{"🔴" if over else "🟠"}</div>'
-            f'<div><div class="at">{esc(m["project_key"] or "")} · {esc(m["naam"] or "")} — {esc(t("ml_phase",lang))} {esc(m["phase_naam"] or "")}</div>'
-            f'<div class="ad">{esc(t("ml_over",lang) if over else t("ml_warn",lang))} · {m["pct"]}%</div></div>'
-            f'<div class="ax"><div class="pct" style="color:{col}">{m["pct"]}%</div>{mute}'
+            f'<div class="alert{" is-project" if project else ""}{" is-done" if done else ""}">'
+            f'<div class="ai {"ai-over" if over else "ai-warn"}">{icon}</div>'
+            # Everything the client asked an alert to carry: project number and
+            # name, phase, percentage and owner.
+            f'<div><div class="at">{esc(m["project_key"] or "")} · {esc(m["naam"] or "")}'
+            f'<span class="ml-kind">{esc(soort)}</span>'
+            f'{who}</div>'
+            f'<div class="ad">{esc(melding_text(lang, m))}</div></div>'
+            f'<div class="ax"><div class="pct" style="color:{col}">{m["pct"]}%</div>{act}'
             f'<button class="btn" onclick="openDrawer(\'{m["project_id"]}\')">{esc(t("ml_view",lang))} →</button></div></div>')
     return "".join(out)
 
@@ -738,7 +779,8 @@ def _mail_card(lang, mail_status, verantw_emails, verantws):
 def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
                   has_tl_costs=None, tl_users=None, cost_rates=None,
                   taxonomy=None, seen_keys=None, suggestions=None, basis="cost",
-                  mail_status=(False, True, ""), verantw_emails=None, verantws=None):
+                  mail_status=(False, True, ""), verantw_emails=None, verantws=None,
+                  project_thresholds=None):
     msg = f'<div class="savemsg">{esc(t("be_saved",lang))}</div>' if saved else ""
     user_rows = "".join(
         f'<div class="be-row"><span class="nm">{esc(u["naam"] or u["email"])}</span>'
@@ -782,6 +824,11 @@ def render_beheer(lang, users, thresholds, internal_rate, external_rate, saved,
 <div class="be-row">amber ≥ <input name="amber" type="number" value="{th['amber']}" style="width:80px"> %
 &nbsp; red &gt; <input name="red" type="number" value="{th['red']}" style="width:80px"> %
 &nbsp; dark-red ≥ <input name="darkred" type="number" value="{th['darkred']}" style="width:80px"> %</div>
+<button class="btn" style="margin-top:8px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button></form></div>
+<div class="be-card"><h2>{esc(t('be_pth_title',lang))}</h2>
+<p class="panel-s">{esc(t('be_pth_hint',lang))}</p>
+<form method="post" action="/app/beheer"><input type="hidden" name="form" value="project_thresholds">
+<div class="be-row">{"".join(f'<input name="p{i+1}" type="number" min="1" max="999" value="{v}" style="width:90px"> %&nbsp;&nbsp;' for i, v in enumerate((project_thresholds or [80, 90, 100])[:3]))}</div>
 <button class="btn" style="margin-top:8px;background:var(--accent);color:#fff;border:none" type="submit">{esc(t('be_save',lang))}</button></form></div>
 {_basis_card(lang, basis)}
 {_phase_card(lang, taxonomy, seen_keys, suggestions)}

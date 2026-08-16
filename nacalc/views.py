@@ -38,7 +38,7 @@ def render_page(active, title, sub, content):
     else:
         synced = t("never_synced", lang)
     tip = ss.get("last_error") or (ss.get("last_ok_at") or "")
-    badge = store.count_unseen_meldingen()
+    badge = store.count_open_meldingen()
     collapsed = request.cookies.get("sidebar") == "collapsed"
     return pages.shell(lang, active, title, sub, content, badge, synced,
                            ss.get("running"), bool(u and u["is_admin"]), collapsed,
@@ -161,36 +161,57 @@ def set_afgerond(pid):
 
 
 # ---------- meldingen ----------
+def mijn_verantw(user):
+    """The owner code(s) this account stands for, or None if it is linked to none.
+
+    Teamleader's "1. Verantw." is free text (LS, SDS, KH…) with no address
+    attached, so the link runs through the name->email table already used for
+    the digests: we simply read it the other way round.
+    """
+    if not user or not user.get("email"):
+        return None
+    mail = user["email"].strip().lower()
+    codes = [k for k, v in (store.get_config("verantw_emails", {}) or {}).items()
+             if (v or "").strip().lower() == mail]
+    return codes or None
+
+
 @bp.get("/app/meldingen")
 @auth.login_required
 def meldingen():
+    """Mine by default; everything on request.
+
+    An account linked to no owner sees everything rather than an empty screen —
+    with a banner saying why, since today only one of the six owners has an
+    address filled in.
+    """
     lang = get_lang()
-    items = store.list_meldingen()
+    u = auth.current_user()
+    codes = mijn_verantw(u)
+    scope = request.args.get("scope") or "mijn"
+    show_done = request.args.get("done") == "1"
+    wanted = None if (scope == "alle" or codes is None) else codes
+    items = store.list_meldingen(verantw=wanted, open_only=not show_done)
     store.mark_meldingen_seen()
-    content = pages.render_meldingen(lang, items, snoozed=store.snoozed_projects(),
-                                     snooze_days=config.DEFAULT_SNOOZE_DAGEN)
+    content = pages.render_meldingen(lang, items, scope=scope, show_done=show_done,
+                                     is_admin=bool(u and u["is_admin"]),
+                                     unlinked=codes is None)
     return render_page("meldingen", t("nav_meldingen", lang), t("ml_sub", lang), content)
 
 
-@bp.post("/app/meldingen/snooze")
+@bp.post("/app/meldingen/<int:mid>/afhandelen")
 @auth.login_required
-def snooze_melding():
-    """Mute a project's alert emails after a budget review.
+def afhandelen_melding(mid):
+    """Tick an alert off once investigated, so only open ones remain."""
+    u = auth.current_user()
+    store.afhandelen(mid, (u or {}).get("email"))
+    return redirect(request.referrer or "/app/meldingen")
 
-    "er moet een manier zijn om deze mailing te dempen als er een analyse van
-    het budget/timing is gebeurd" -- the alerts stay visible on the page, only
-    the emails stop.
-    """
-    pid = (request.form.get("project_id") or "").strip()
-    try:
-        days = max(1, min(365, int(request.form.get("days") or config.DEFAULT_SNOOZE_DAGEN)))
-    except ValueError:
-        days = config.DEFAULT_SNOOZE_DAGEN
-    if pid:
-        u = auth.current_user()
-        until = time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                              time.gmtime(time.time() + days * 86400))
-        store.snooze_project(pid, until, (u or {}).get("email"))
+
+@bp.post("/app/meldingen/<int:mid>/heropenen")
+@auth.login_required
+def heropenen_melding(mid):
+    store.heropenen(mid)
     return redirect(request.referrer or "/app/meldingen")
 
 
@@ -642,10 +663,19 @@ def beheer():
             if ext is not None and ext > 0:
                 store.set_config("external_rate", ext)
             sync.trigger_sync()  # recompute margins with the new rate
+        elif form == "project_thresholds":
+            vals = sorted({int(v) for v in
+                           (_fnum(f"p{i}") for i in (1, 2, 3)) if v and 1 <= v <= 999})
+            if vals:
+                store.set_config("project_thresholds", vals)
+                sync.trigger_sync()   # alerts are raised at sync time
         elif form == "thresholds":
             store.set_config("thresholds", {
                 "amber": _fnum("amber", 80), "red": _fnum("red", 100),
                 "darkred": _fnum("darkred", 115)})
+            # These thresholds decide the colours AND the phase alerts, and both
+            # are baked in at sync time -- without this the change looked inert.
+            sync.trigger_sync()
         elif form == "costrate":
             uid = (request.form.get("tl_user_id") or "").strip()
             eff = (request.form.get("effective_from") or "").strip()
@@ -746,6 +776,8 @@ def beheer():
                                   has_tl_costs=store.get_config("has_project_costs", None),
                                   tl_users=store.get_config("tl_users", []),
                                   cost_rates=store.list_cost_rates(),
+                                  project_thresholds=store.get_config(
+                                      'project_thresholds', config.DEFAULT_PROJECT_THRESHOLDS),
                                   taxonomy=tx, seen_keys=seen_keys,
                                   suggestions=phases_mod.suggest_aliases(seen_names, tx),
                                   basis=store.get_config("status_basis",

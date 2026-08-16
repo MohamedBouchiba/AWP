@@ -247,28 +247,65 @@ def _compute(item, mappings, thresholds, internal_rate, rates_map, taxonomy=None
     }
 
 
-def _make_meldingen(snap):
-    """Refresh a project's alerts, PRESERVING the state of the ones that persist.
+def _alertable(phases):
+    """Phases that can raise an alert: started, quoted, with a time budget, and
+    not overhead. Same exclusions as the project badge, so the Meldingen page can
+    never nag about exactly what the status ignores."""
+    return [p for p in phases
+            if p.get("started") and p.get("applicable") and not p.get("overhead")
+            and (p.get("budget_hours") or 0) > 0]
 
-    Used to be clear-all-then-reinsert, which reset `seen` (and would reset any
-    "already emailed" marker) on every hourly run -- see store.upsert_melding.
+
+def _crossed(pct, levels):
+    """[(key, threshold)] for every threshold `pct` has reached, low to high."""
+    return [(k, v) for k, v in levels if pct is not None and pct >= v]
+
+
+def _make_meldingen(snap, thresholds=None, project_thresholds=None):
+    """One alert per THRESHOLD CROSSED, created once and kept while it holds.
+
+    Client rule: "Per fase worden maximaal drie meldingen gegenereerd, elk exact
+    één keer. Zolang dezelfde drempel overschreden blijft, komt er geen nieuwe
+    melding of mail. Pas bij het bereiken van een volgende drempel volgt een
+    nieuwe melding." So a phase at 120% carries three alerts (80, 100, 115), not
+    one for its current colour band.
+
+    Alerts whose threshold is no longer crossed are pruned; the ones that hold
+    keep their seen / notified / handled state through upsert_melding.
     """
-    pid = snap["project_id"]
+    th = thresholds or config.DEFAULT_THRESHOLDS
+    pth = project_thresholds or config.DEFAULT_PROJECT_THRESHOLDS
+    # amber/red/darkred double as the three phase levels: they ARE the colour
+    # thresholds the client already tunes in Beheer.
+    levels = [("amber", th.get("amber", 80)), ("red", th.get("red", 100)),
+              ("darkred", th.get("darkred", 115))]
+    pid, key, naam = snap["project_id"], snap["project_key"], snap["naam"]
+    verantw = snap.get("verantw_arch")
+    phases = json.loads(snap["phases_json"] or "[]")
     keep = set()
-    for p in json.loads(snap["phases_json"]):
-        # Same exclusions as calc._rankable: an overhead phase (administratie)
-        # or an unbudgeted one must not raise an alert either, otherwise the
-        # Meldingen page keeps nagging about exactly what the rollup ignores.
-        if p.get("overhead") or not p.get("applicable"):
-            continue
-        # Alerts follow the HOURS, same measure as the project badge, so the
-        # Meldingen page can never contradict the label on the overview.
-        if p["started"] and p.get("uren_color") in ("amber", "red", "darkred"):
-            sev = p["uren_color"]
-            store.upsert_melding(pid, snap["project_key"], snap["naam"], p["naam"],
-                                 sev, p["uren_pct"], p["naam"],
-                                 verantw=snap.get("verantw_arch"))
+
+    for p in _alertable(phases):
+        for sev, _drempel in _crossed(p.get("uren_pct"), levels):
+            store.upsert_melding(pid, key, naam, p["naam"], sev, p["uren_pct"],
+                                 verantw=verantw, soort="fase")
             keep.add((p["naam"], sev))
+
+    # Project level: the cumulative hours over ALL phases, including the ones
+    # not started. That denominator is the point -- "vroeg zien dat een project
+    # al 80% van zijn totale urenbudget verbruikt heeft terwijl er nog fases
+    # moeten komen" is unsayable if you only count the phases already running.
+    budg = sum(p.get("budget_hours") or 0 for p in phases
+               if not p.get("overhead") and (p.get("budget_hours") or 0) > 0)
+    trak = sum(p.get("tracked_hours") or 0 for p in phases
+               if not p.get("overhead") and (p.get("budget_hours") or 0) > 0)
+    if budg > 0:
+        pct = round(trak / budg * 100, 1)
+        for _k, drempel in _crossed(pct, [(f"p{d}", d) for d in pth]):
+            sev = f"p{int(drempel)}"
+            store.upsert_melding(pid, key, naam, "", sev, pct,
+                                 verantw=verantw, soort="project")
+            keep.add(("", sev))
+
     store.prune_meldingen(pid, keep)
 
 
@@ -291,28 +328,23 @@ def send_digests(now_iso_str=None):
     The client's constraint was explicit: "wel geen spam per tijdregistratie,
     dus er moet een manier zijn om deze mailing te dempen als er een analyse van
     het budget/timing is gebeurd." Three independent guards:
-      1. an alert is only ever mailed once per 24h (notified_at, set in the DB
-         BEFORE the next run can pick it up again);
+      1. an alert is mailed exactly once, ever (notified_at, written to the DB
+         right after a successful send);
       2. alerts are grouped into a single mail per responsible, so a project
          with eight drifting phases is one message, not eight;
-      3. a project can be snoozed from the Meldingen page after a budget review.
+      3. handled alerts leave the list and are never re-sent.
     """
     if not mailer.is_configured():
         return 0
     now = now_iso_str or store.now_iso()
-    cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                           time.gmtime(time.time() - 24 * 3600))
-    rows = store.meldingen_to_notify(cutoff)
+    rows = store.meldingen_to_notify()
     if not rows:
         return 0
-    snoozed = store.snoozed_projects(now)
     emails = {k.strip().lower(): v for k, v in
               (store.get_config("verantw_emails", {}) or {}).items()}
 
     by_person = {}
     for m in rows:
-        if m["project_id"] in snoozed:
-            continue
         addr = emails.get((m.get("verantw") or "").strip().lower())
         if not addr:
             continue          # nobody to send to -> leave notified_at untouched
@@ -380,6 +412,8 @@ def run_full():
         internal_rate = store.get_config("internal_cost_rate", config.DEFAULT_INTERNAL_COST_RATE)
         taxonomy = store.get_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY)
         basis = store.get_config("status_basis", calc.DEFAULT_BASIS)
+        project_thresholds = store.get_config("project_thresholds",
+                                              config.DEFAULT_PROJECT_THRESHOLDS)
         rates_map = store.cost_rate_map()
         seen_phase_names = set()   # feeds the Beheer "optimaliseer fasenamen" button
         items = TL.tl_all("projects-v2/projects.list", {}, size=20)
@@ -400,7 +434,7 @@ def run_full():
                 failed += 1      # transient API error on one project
                 continue
             store.upsert_snapshot(snap)
-            _make_meldingen(snap)
+            _make_meldingen(snap, thresholds, project_thresholds)
             seen.append(snap["project_id"])
             seen_phase_names.update(p["naam"] for p in json.loads(snap["phases_json"])
                                     if p.get("naam"))

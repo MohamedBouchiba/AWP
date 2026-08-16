@@ -355,6 +355,34 @@ BOTH = ONLY_ADMIN + [{"name": "5. UITVOERINGSDOSSIER", "budget_eur": 1000.0,
 eq("une vraie fase en depassement reste prioritaire",
    calc.project_summary(calc.build_phases(BOTH, TH, phases.DEFAULT_TAXONOMY))["status"], "over")
 
+print("\n--- meldingen : un seuil franchi = une melding ---")
+LV = [("amber", 80), ("red", 100), ("darkred", 115)]
+eq("70 % : aucun seuil franchi", sync._crossed(70.0, LV), [])
+eq("80 % : le premier seuil, pile", [k for k, _ in sync._crossed(80.0, LV)], ["amber"])
+eq("85 % : un seuil", [k for k, _ in sync._crossed(85.0, LV)], ["amber"])
+eq("105 % : deux seuils", [k for k, _ in sync._crossed(105.0, LV)], ["amber", "red"])
+eq("120 % : les trois", [k for k, _ in sync._crossed(120.0, LV)], ["amber", "red", "darkred"])
+eq("pct None : rien", sync._crossed(None, LV), [])
+eq("seuils projet 80/90/100 a 95 %",
+   [k for k, _ in sync._crossed(95.0, [("p80", 80), ("p90", 90), ("p100", 100)])],
+   ["p80", "p90"])
+
+print("\n--- meldingen : quelles fases peuvent en declencher ---")
+AL = calc.build_phases([
+    {"name": "1. ADMINISTRATIE", "budget_eur": 250.0, "spent_eur": 900.0, "cost_eur": 900.0,
+     "tracked_hours": 20.0, "budget_hours": 3.0},        # overhead -> exclue
+    {"name": "3. VOORONTWERP", "budget_eur": 1000.0, "spent_eur": 900.0, "cost_eur": 900.0,
+     "tracked_hours": 90.0, "budget_hours": 100.0},      # eligible
+    {"name": "4. BOUWAANVRAAG", "budget_eur": 1000.0, "spent_eur": 900.0, "cost_eur": 900.0,
+     "tracked_hours": 90.0, "budget_hours": 0.0},        # pas de budget d'heures
+    {"name": "5. AANBESTEDING", "budget_eur": 0.0, "spent_eur": 0.0, "cost_eur": None,
+     "tracked_hours": 5.0, "budget_hours": 10.0},        # hors offerte
+    {"name": "7. NAZORG", "budget_eur": 1000.0, "spent_eur": 0.0, "cost_eur": None,
+     "tracked_hours": 0.0, "budget_hours": 50.0},        # pas demarree
+], TH, phases.DEFAULT_TAXONOMY)
+eq("seule la fase eligible peut alerter",
+   [p["naam"] for p in sync._alertable(AL)], ["3. VOORONTWERP"])
+
 print("\n--- afgeronde dossiers (lot 5) : detection par inactivite ---")
 eq("ecart de mois", calc.months_between("2026-05", "2026-08"), 3)
 eq("ecart a cheval sur l'annee", calc.months_between("2025-11", "2026-02"), 3)

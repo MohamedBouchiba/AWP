@@ -464,30 +464,71 @@ OVER = calc_mod.build_phases([
 SNAP_OVER = {"project_id": "fx-mail", "project_key": "A500", "naam": "Mail",
              "verantw_arch": "WB", "phases_json": json.dumps(OVER)}
 
-# 1. The persistence fix: a repeated sync must NOT resurrect a read alert.
-sync_mod._make_meldingen(SNAP_OVER)
-assert store.count_unseen_meldingen() == 2, "2 meldingen attendues (over + dreigt over)"
-store.mark_meldingen_seen()
-sync_mod._make_meldingen(SNAP_OVER)          # the hourly sync runs again
-assert store.count_unseen_meldingen() == 0, \
-    "la sync a recree les meldingen -> le badge repasse en rouge toutes les heures"
-print("OK   une re-sync ne ressuscite pas une melding deja lue")
+def _fase_meldingen(pid="fx-mail"):
+    return sorted((m["phase_naam"], m["severity"]) for m in store.list_meldingen()
+                  if m["project_id"] == pid and m.get("soort") != "project")
 
-# 2. A phase dropping back below threshold removes only its own alert.
-BETTER = calc_mod.build_phases([
-    {"name": "3. VOORONTWERP", "budget_eur": 1000.0, "spent_eur": 1500.0, "cost_eur": 1500.0,
-     "tracked_hours": 20.0, "budget_hours": 10.0},
-    {"name": "4. BOUWAANVRAAG", "budget_eur": 1000.0, "spent_eur": 100.0, "cost_eur": 100.0,
-     "tracked_hours": 2.0, "budget_hours": 10.0},
-], cfg_mod.DEFAULT_THRESHOLDS, phases_mod.DEFAULT_TAXONOMY)
-sync_mod._make_meldingen(dict(SNAP_OVER, phases_json=json.dumps(BETTER)))
-kept = [m for m in store.list_meldingen() if m["project_id"] == "fx-mail"]
-assert len(kept) == 1 and kept[0]["phase_naam"] == "3. VOORONTWERP", \
-    f"purge incorrecte des meldingen retombees: {[m['phase_naam'] for m in kept]}"
-print("OK   une fase repassee sous le seuil perd sa melding, les autres restent")
 
-# 3. THE anti-spam guarantee: three syncs in a row -> exactly one email.
-sync_mod._make_meldingen(SNAP_OVER)
+def _snap(uren3, uren4):
+    ph = calc_mod.build_phases([
+        {"name": "3. VOORONTWERP", "budget_eur": 1000.0, "spent_eur": 900.0, "cost_eur": 900.0,
+         "tracked_hours": uren3, "budget_hours": 10.0},
+        {"name": "4. BOUWAANVRAAG", "budget_eur": 1000.0, "spent_eur": 900.0, "cost_eur": 900.0,
+         "tracked_hours": uren4, "budget_hours": 10.0},
+    ], cfg_mod.DEFAULT_THRESHOLDS, phases_mod.DEFAULT_TAXONOMY)
+    return dict(SNAP_OVER, phases_json=json.dumps(ph))
+
+
+# 1. Un seuil franchi = une melding. Une fase qui monte en accumule trois.
+sync_mod._make_meldingen(_snap(7.0, 0.5))          # 70 % et 5 %
+assert _fase_meldingen() == [], f"aucune melding attendue sous 80 % : {_fase_meldingen()}"
+sync_mod._make_meldingen(_snap(8.5, 0.5))          # 85 %
+assert _fase_meldingen() == [("3. VOORONTWERP", "amber")], _fase_meldingen()
+sync_mod._make_meldingen(_snap(10.5, 0.5))         # 105 %
+assert _fase_meldingen() == [("3. VOORONTWERP", "amber"), ("3. VOORONTWERP", "red")], \
+    _fase_meldingen()
+sync_mod._make_meldingen(_snap(12.0, 0.5))         # 120 %
+assert len(_fase_meldingen()) == 3, f"trois seuils franchis attendus : {_fase_meldingen()}"
+print("OK   70 -> 85 -> 105 -> 120 % : 0, 1, 2 puis 3 meldingen")
+
+# 2. Une re-sync a valeur constante n'en cree aucune de plus, et ne remet pas
+#    a zero l'etat de celles qui tiennent.
+_before = [(m["id"], m["created_at"]) for m in store.list_meldingen()]
+sync_mod._make_meldingen(_snap(12.0, 0.5))
+assert [(m["id"], m["created_at"]) for m in store.list_meldingen()] == _before, \
+    "une re-sync a recree ou modifie des meldingen"
+print("OK   une re-sync identique ne cree ni ne reinitialise rien")
+
+# 3. La fase redescend : elle perd les seuils qu'elle ne franchit plus.
+sync_mod._make_meldingen(_snap(8.5, 0.5))          # retour a 85 %
+assert _fase_meldingen() == [("3. VOORONTWERP", "amber")], \
+    f"les seuils non franchis auraient du disparaitre : {_fase_meldingen()}"
+print("OK   en redescendant, seuls les seuils encore franchis subsistent")
+
+# 4. Une melding cochee ne revient pas a la sync suivante.
+_open = [m for m in store.list_meldingen() if m["project_id"] == "fx-mail"]
+store.afhandelen(_open[0]["id"], "test@awpburo.be")
+assert not [m for m in store.list_meldingen() if m["id"] == _open[0]["id"]], \
+    "une melding cochee apparait encore dans la liste ouverte"
+sync_mod._make_meldingen(_snap(8.5, 0.5))
+assert not [m for m in store.list_meldingen() if m["id"] == _open[0]["id"]], \
+    "la sync a fait revenir une melding cochee"
+assert [m for m in store.list_meldingen(open_only=False) if m["id"] == _open[0]["id"]], \
+    "la melding cochee a disparu au lieu d'etre archivee"
+store.heropenen(_open[0]["id"])
+print("OK   une melding cochee reste cochee apres une sync")
+
+# 5. Meldingen au niveau du projet, sur le cumul de TOUTES les fases.
+#    9.5 + 0.5 = 10 h sur 20 h budgetees = 50 % -> aucune.
+sync_mod._make_meldingen(_snap(9.5, 0.5))
+assert not [m for m in store.list_meldingen() if m.get("soort") == "project"], \
+    "melding projet a 50 % du budget"
+sync_mod._make_meldingen(_snap(9.5, 9.0))          # 18.5/20 = 92.5 %
+_pm = sorted(m["severity"] for m in store.list_meldingen() if m.get("soort") == "project")
+assert _pm == ["p80", "p90"], f"seuils projet attendus p80+p90 : {_pm}"
+print("OK   meldingen projet sur le cumul de toutes les fases (80 / 90 / 100)")
+
+# 6. Anti-spam : chaque melding part une seule fois, groupee par responsable.
 os.environ.update(SMTP_HOST="smtp.test", SMTP_FROM="dash@awpburo.be", MAIL_DRY_RUN="1")
 store.set_config("verantw_emails", {"WB": "wb@awpburo.be"})
 assert mailer_mod.is_configured() and mailer_mod.is_dry_run()
@@ -497,22 +538,9 @@ n3 = sync_mod.send_digests()
 assert (n1, n2, n3) == (1, 0, 0), f"attendu 1 seul envoi, obtenu {(n1, n2, n3)}"
 print("OK   3 syncs consecutives = 1 seul mail (groupe par verantwoordelijke)")
 
-# 4. Snooze stops the mail without hiding the alert.
-store.mark_notified([m["id"] for m in store.list_meldingen()], "2000-01-01T00:00:00Z")
-r = client.post("/app/meldingen/snooze", data={"project_id": "fx-mail", "days": "14"})
-assert r.status_code in (302, 303)
-assert "fx-mail" in store.snoozed_projects(), "snooze non enregistre"
-assert sync_mod.send_digests() == 0, "un projet dempte a quand meme envoye un mail"
-assert any(m["project_id"] == "fx-mail" for m in store.list_meldingen()), \
-    "le snooze a fait disparaitre la melding de la page"
-check("/app/meldingen", 200, login=True, contains="Gedempt")
-print("OK   snooze : plus de mail, melding toujours visible")
-
-# 5. No address for that owner -> no mail, and notified_at stays untouched so
-#    nothing is silently swallowed once the address is filled in.
+# 7. Sans adresse : rien n'est envoye, et rien n'est perdu une fois remplie.
 store.set_config("verantw_emails", {})
-store.mark_notified([m["id"] for m in store.list_meldingen()], "2000-01-01T00:00:00Z")
-store.snooze_project("fx-mail", "2000-01-01T00:00:00Z")     # expire the snooze
+sync_mod._make_meldingen(_snap(10.5, 9.9))   # franchit 100 % -> melding inedite
 assert sync_mod.send_digests() == 0, "mail envoye sans adresse connue"
 store.set_config("verantw_emails", {"WB": "wb@awpburo.be"})
 assert sync_mod.send_digests() == 1, "le mail ne part pas une fois l'adresse remplie"
@@ -696,13 +724,78 @@ store.set_config("phase_taxonomy", phases_mod.DEFAULT_TAXONOMY)
 sync_mod._make_meldingen({"project_id": "fx-uren", "project_key": "A902", "naam": "Uren",
                           "verantw_arch": "WB", "phases_json": json.dumps(UREN)})
 _ml = [m for m in store.list_meldingen() if m["project_id"] == "fx-uren"]
-assert len(_ml) == 1 and _ml[0]["phase_naam"] == "4. BOUWAANVRAAG", \
-    f"les meldingen ne suivent pas les heures : {[(m['phase_naam'], m['severity']) for m in _ml]}"
-assert _ml[0]["pct"] == 150.0, f"la melding montre un % qui n'est pas celui des heures : {_ml[0]['pct']}"
+_fases = sorted((m["phase_naam"], m["severity"]) for m in _ml if m.get("soort") != "project")
+# La fase en cours est a 150 % : elle a franchi les trois seuils. La fase 3 est a
+# 10 %, elle n'en franchit aucun. Le cumul 160/200 = 80 % declenche p80.
+assert _fases == [("4. BOUWAANVRAAG", "amber"), ("4. BOUWAANVRAAG", "darkred"),
+                  ("4. BOUWAANVRAAG", "red")], \
+    f"les meldingen ne suivent pas les heures : {_fases}"
+assert all(m["pct"] == 150.0 for m in _ml if m.get("soort") != "project"), \
+    "le % des meldingen n'est pas celui des heures"
+assert [m["severity"] for m in _ml if m.get("soort") == "project"] == ["p80"], \
+    "melding projet attendue au seuil 80 % (160/200 h)"
 print("OK   les meldingen suivent les heures, comme le badge")
 
 # Seuils : le libelle doit dire qu'il s'agit des heures.
 check("/app/beheer", 200, login=True, contains="begrote uren")
+
+# --- l'ecran des meldingen -------------------------------------------------
+sync_mod._make_meldingen(_snap(12.0, 9.0))     # fase a 120 % + cumul 105 %
+store.set_config("verantw_emails", {"WB": "wb@awpburo.be"})
+
+# Le compte admin n'est lie a aucun code -> il voit tout, avec l'explication.
+r = check("/app/meldingen", 200, login=True, contains="Alle meldingen")
+body = r.get_data(as_text=True)
+assert "geen enkele verantwoordelijke gekoppeld" in body, "pas de bandeau d'explication"
+assert body.count('class="alert') >= 4, "les meldingen ne sont pas listees"
+assert "is-project" in body, "les meldingen projet ne sont pas distinguees"
+assert "nadert het budget" in body and "over budget" in body, "messages par seuil absents"
+print("OK   ecran : vues, bandeau, distinction projet/fase, messages par seuil")
+
+# Rattacher le compte au code WB -> la vue par defaut se limite a ses dossiers.
+store.set_config("verantw_emails", {"WB": EMAIL})
+r = check("/app/meldingen", 200, login=True)
+body = r.get_data(as_text=True)
+assert "geen enkele verantwoordelijke gekoppeld" not in body, "bandeau affiche a tort"
+assert body.count('class="alert') >= 4, "les meldingen de WB devraient s'afficher"
+# Rattache a un code SANS melding : la vue 'mijn' doit etre vide, pas repliee
+# sur "tout afficher" -- ce repli ne vaut que pour un compte non rattache.
+store.set_config("verantw_emails", {"WB": "quelquun-dautre@awpburo.be", "XX": EMAIL})
+r = check("/app/meldingen", 200, login=True)
+assert r.get_data(as_text=True).count('class="alert') == 0, \
+    "les meldingen d'un autre responsable sont visibles dans 'mes meldingen'"
+r = check("/app/meldingen?scope=alle", 200, login=True)
+assert r.get_data(as_text=True).count('class="alert') >= 4, "la vue 'alle' ne montre rien"
+print("OK   'mijn' filtre sur le responsable, 'alle' montre tout")
+
+# Cocher depuis l'ecran, puis retrouver la melding via 'toon afgehandelde'.
+_m = store.list_meldingen()[0]
+assert client.post(f"/app/meldingen/{_m['id']}/afhandelen").status_code in (302, 303)
+assert not [x for x in store.list_meldingen() if x["id"] == _m["id"]], "cochage sans effet"
+r = check("/app/meldingen?scope=alle&done=1", 200, login=True, contains="Heropenen")
+assert client.post(f"/app/meldingen/{_m['id']}/heropenen").status_code in (302, 303)
+assert [x for x in store.list_meldingen() if x["id"] == _m["id"]], "reouverture sans effet"
+print("OK   cochage, archive et reouverture depuis l'ecran")
+
+# Le badge compte les meldingen OUVERTES, pas les non-lues.
+store.mark_meldingen_seen()
+_n = len(store.list_meldingen())
+assert store.count_open_meldingen() == _n, "le badge ne compte pas les meldingen ouvertes"
+store.afhandelen(_m["id"])
+assert store.count_open_meldingen() == _n - 1, "le badge ne suit pas le cochage"
+print("OK   le badge suit les meldingen ouvertes")
+
+# Seuils projet reglables en Beheer.
+check("/app/beheer", 200, login=True, contains="Drempels op projectniveau")
+post("/app/beheer", {"form": "project_thresholds", "p1": "70", "p2": "85", "p3": "95"})
+assert store.get_config("project_thresholds") == [70, 85, 95], "seuils projet non enregistres"
+post("/app/beheer", {"form": "project_thresholds", "p1": "80", "p2": "90", "p3": "100"})
+print("OK   seuils projet reglables en Beheer")
+
+# Le dempen a bien disparu.
+assert client.post("/app/meldingen/snooze", data={"project_id": "fx-mail"}).status_code == 404
+assert not hasattr(store, "snooze_project"), "le code du snooze subsiste"
+print("OK   la fonction 'dempen' est entierement retiree")
 
 shutil.rmtree(os.environ["DATA_DIR"], ignore_errors=True)
 

@@ -31,7 +31,8 @@ DEFAULT_SYNC_INTERVAL_MINUTES = int(os.environ.get("SYNC_INTERVAL_MINUTES", "60"
 #    carry uren_pct / uren_color.
 # 7: the badge is the worst of (current phase, cumulative), not of
 #    (cumulative, worst finished phase) -- Michiel corrected the rule.
-CURRENT_DATA_VERSION = 7
+# 8: one alert per threshold crossed + project-level alerts.
+CURRENT_DATA_VERSION = 8
 
 # Which numbers the per-phase percentage compares. "cost" = kostprijs bureau vs
 # geofferteerd budget (what AWP asked for); "spent" = Teamleader's
@@ -45,8 +46,10 @@ DEFAULT_STATUS_BASIS = "cost"
 # signal available. Overridable per project in the drawer.
 DEFAULT_AFGEROND_MAANDEN = 3
 
-# How long a "budget reviewed, stop reminding me" mute lasts.
-DEFAULT_SNOOZE_DAGEN = 14
+# Project-level alert thresholds: % of the TOTAL hours budget consumed. Separate
+# from the phase thresholds so AWP can decide independently when they want the
+# early warning that a project is running out of hours.
+DEFAULT_PROJECT_THRESHOLDS = [80, 90, 100]
 
 # Project custom-field labels we map to ids on first sync (Teamleader 'project' context).
 CF_LABELS = {
